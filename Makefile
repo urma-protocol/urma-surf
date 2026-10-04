@@ -4,8 +4,12 @@
 
 include config.mk
 
-SRC = surf.c
+SRC = surf.c urma.c fonts.c brand.c
 WSRC = webext-surf.c
+FONTS = fonts/AdwaitaSans-Regular.ttf fonts/AdwaitaMono-Regular.ttf
+MARKS = brand/urma-mark-16.png brand/urma-mark-22.png brand/urma-mark-32.png \
+        brand/urma-mark-44.png brand/urma-mark-48.png brand/urma-mark-64.png \
+        brand/urma-mark-128.png brand/urma-mark-256.png
 OBJ = $(SRC:.c=.o)
 WOBJ = $(WSRC:.c=.o)
 WLIB = $(WSRC:.c=.so)
@@ -22,7 +26,7 @@ options:
 surf: $(OBJ)
 	$(CC) $(SURFLDFLAGS) $(LDFLAGS) -o $@ $(OBJ) $(LIBS)
 
-$(OBJ) $(WOBJ): config.h common.h config.mk
+$(OBJ) $(WOBJ): config.h common.h config.mk urma.h fonts.h brand.h $(FONTS) $(MARKS)
 
 config.h:
 	cp config.def.h $@

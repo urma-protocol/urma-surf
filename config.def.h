@@ -38,7 +38,7 @@ static Parameter defconfig[ParameterLast] = {
 	[PreferredLanguages]  =       { { .v = (char *[]){ NULL } }, },
 	[RunInFullscreen]     =       { { .i = 0 },     },
 	[ScrollBars]          =       { { .i = 1 },     },
-	[ShowIndicators]      =       { { .i = 1 },     },
+	[ShowIndicators]      =       { { .i = 0 },     },
 	[SiteQuirks]          =       { { .i = 1 },     },
 	[SmoothScrolling]     =       { { .i = 0 },     },
 	[SpellChecking]       =       { { .i = 0 },     },
@@ -56,25 +56,10 @@ static UriParameters uriparams[] = {
 };
 
 /* default window size: width, height */
-static int winsize[] = { 800, 600 };
+static int winsize[] = { 1100, 720 };
 
 static WebKitFindOptions findopts = WEBKIT_FIND_OPTIONS_CASE_INSENSITIVE |
                                     WEBKIT_FIND_OPTIONS_WRAP_AROUND;
-
-#define PROMPT_GO   "Go:"
-#define PROMPT_FIND "Find:"
-
-/* SETPROP(readprop, setprop, prompt)*/
-#define SETPROP(r, s, p) { \
-        .v = (const char *[]){ "/bin/sh", "-c", \
-             "prop=\"$(printf '%b' \"$(xprop -id $1 "r" " \
-             "| sed -e 's/^"r"(UTF8_STRING) = \"\\(.*\\)\"/\\1/' " \
-             "      -e 's/\\\\\\(.\\)/\\1/g')\" " \
-             "| dmenu -p '"p"' -w $1)\" " \
-             "&& xprop -id $1 -f "s" 8u -set "s" \"$prop\"", \
-             "surf-setprop", winid, NULL \
-        } \
-}
 
 /* DOWNLOAD(URI, referer) */
 #define DOWNLOAD(u, r) { \
@@ -130,17 +115,33 @@ static SiteSpecific certs[] = {
  */
 static Key keys[] = {
 	/* modifier              keyval          function    arg */
-	{ MODKEY,                GDK_KEY_g,      spawn,      SETPROP("_SURF_URI", "_SURF_GO", PROMPT_GO) },
-	{ MODKEY,                GDK_KEY_f,      spawn,      SETPROP("_SURF_FIND", "_SURF_FIND", PROMPT_FIND) },
-	{ MODKEY,                GDK_KEY_slash,  spawn,      SETPROP("_SURF_FIND", "_SURF_FIND", PROMPT_FIND) },
+	/* Browser-classic keys (facelift). Ctrl-l is the address bar, as in
+	 * every browser; forward moved to Alt-Right / Ctrl-]. dmenu prompts
+	 * are gone: address and find are inline. The table is documented in
+	 * the in-app shortcut sheet (Ctrl-?) and facelift/FACELIFT.md. */
+	{ MODKEY,                GDK_KEY_l,      showaddress, { 0 } },
+	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_l,      showaddress, { 0 } },
+	{ 0,                     GDK_KEY_F6,     showaddress, { 0 } },
+	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_b,      togglebar,   { 0 } },
+	{ MODKEY,                GDK_KEY_f,      showfind,    { 0 } },
+	{ MODKEY,                GDK_KEY_slash,  showfind,    { 0 } },
+	{ MODKEY,                GDK_KEY_comma,  showsettings, { 0 } },
+	{ MODKEY,                GDK_KEY_question, showshortcuts, { 0 } },
+	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_question, showshortcuts, { 0 } },
+	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_slash,  showshortcuts, { 0 } },
 
 	{ 0,                     GDK_KEY_Escape, stop,       { 0 } },
 	{ MODKEY,                GDK_KEY_c,      stop,       { 0 } },
 
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_r,      reload,     { .i = 1 } },
 	{ MODKEY,                GDK_KEY_r,      reload,     { .i = 0 } },
+	{ 0,                     GDK_KEY_F5,     reload,     { .i = 0 } },
+	{ MODKEY,                GDK_KEY_F5,     reload,     { .i = 1 } },
 
-	{ MODKEY,                GDK_KEY_l,      navigate,   { .i = +1 } },
+	{ GDK_MOD1_MASK,         GDK_KEY_Left,   navigate,   { .i = -1 } },
+	{ GDK_MOD1_MASK,         GDK_KEY_Right,  navigate,   { .i = +1 } },
+	{ MODKEY,                GDK_KEY_bracketleft,  navigate, { .i = -1 } },
+	{ MODKEY,                GDK_KEY_bracketright, navigate, { .i = +1 } },
 	{ MODKEY,                GDK_KEY_h,      navigate,   { .i = -1 } },
 
 	/* vertical and horizontal scrolling, in viewport percentage */
@@ -157,7 +158,22 @@ static Key keys[] = {
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_q,      zoom,       { .i = 0  } },
 	{ MODKEY,                GDK_KEY_minus,  zoom,       { .i = -1 } },
 	{ MODKEY,                GDK_KEY_plus,   zoom,       { .i = +1 } },
+	/* FACELIFT: on most layouts "+" is Shift-=, so the keyval arrives as
+	 * plus with Shift in the state; that pair had no binding. */
+	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_plus,   zoom,       { .i = +1 } },
+	/* MODERNISE (urma-surf): Ctrl-plus needs Shift on most layouts, so
+	 * the unshifted Ctrl-= must work too; keypad and Ctrl-0 as usual. */
+	{ MODKEY,                GDK_KEY_equal,  zoom,       { .i = +1 } },
+	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_equal,  zoom,       { .i = +1 } },
+	{ MODKEY,                GDK_KEY_KP_Add, zoom,       { .i = +1 } },
+	{ MODKEY,             GDK_KEY_KP_Subtract, zoom,     { .i = -1 } },
+	{ MODKEY,                GDK_KEY_0,      zoom,       { .i = 0  } },
+	{ MODKEY,                GDK_KEY_KP_0,   zoom,       { .i = 0  } },
 
+	/* URMA: Copy link (short form when truthful) / Copy link with DNS. */
+	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_y,      copylink,   { .i = 0 } },
+	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_u,      copylink,   { .i = 1 } },
+	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_d,      urmadetails, { 0 } },
 	{ MODKEY,                GDK_KEY_p,      clipboard,  { .i = 1 } },
 	{ MODKEY,                GDK_KEY_y,      clipboard,  { .i = 0 } },
 
@@ -178,7 +194,6 @@ static Key keys[] = {
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_b,      toggle,     { .i = ScrollBars } },
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_t,      toggle,     { .i = StrictTLS } },
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_m,      toggle,     { .i = Style } },
-	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_d,      toggle,     { .i = DarkMode } },
 };
 
 /* button definitions */
