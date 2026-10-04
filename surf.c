@@ -2752,18 +2752,28 @@ buildchrome(Frame *f)
 	 * verification badge, the gear. The progress bar and status line of a
 	 * tab float over its page and never take layout space. */
 	const char *style =
-	    ".urma-strip { background: #0a0f0c; padding: 6px 8px 0; }"
-	    "button.urma-tab { background: #121a15; border: 1px solid #1f2b25;"
-	    "  border-bottom: none; border-radius: 8px 8px 0 0; padding: 0 2px 0 12px;"
-	    "  margin-right: 3px; min-height: 30px; min-width: 60px; box-shadow: none;"
-	    "  outline: none; }"
+	    /* Tab strip. The active tab is unmistakable: a persistent lime line
+	     * on top, the bar's own ink behind it, bright bold title; inactive
+	     * tabs sit darker with dim text, and hover only lightens them. The
+	     * inactive top line is transparent so nothing moves on a switch. */
+	    ".urma-strip { background: #070b09; padding: 6px 8px 0; }"
+	    "button.urma-tab { background: #0e1411; border: 1px solid #16201a;"
+	    "  border-top: 3px solid transparent; border-bottom: none;"
+	    "  border-radius: 8px 8px 0 0; padding: 0 2px 0 12px; margin-right: 3px;"
+	    "  min-height: 30px; min-width: 60px; box-shadow: none; outline: none; }"
 	    "button.urma-tab label { font-family: \"" URMA_FONT_SANS "\", sans-serif;"
-	    "  font-size: 9.5pt; color: #98a49b; }"
-	    "button.urma-tab:hover { background: #1f2b25; }"
-	    "button.urma-tab.active { background: #0f1512; border-color: #2a3a31; }"
-	    "button.urma-tab.active label { color: #ecebe3; }"
+	    "  font-size: 9.5pt; color: #6f7a72; }"
+	    "button.urma-tab:hover { background: #17211c; border-color: #1f2b25;"
+	    "  border-top-color: #3b4a1a; }"
+	    "button.urma-tab:hover label { color: #b9c2bb; }"
+	    "button.urma-tab.active, button.urma-tab.active:hover { background: #1a251f;"
+	    "  border-color: #2f3f35; border-top: 3px solid #d6fa52; }"
+	    "button.urma-tab.active label, button.urma-tab.active:hover label {"
+	    "  color: #ffffff; font-weight: 700; }"
+	    "button.urma-tab:focus { border-top-color: #9db83a; }"
 	    "button.urma-tabclose { min-width: 18px; min-height: 18px; padding: 0;"
-	    "  margin: 0 2px 0 6px; border-radius: 4px; color: #98a49b; }"
+	    "  margin: 0 2px 0 6px; border-radius: 4px; color: #6f7a72; }"
+	    "button.urma-tab.active button.urma-tabclose { color: #ecebe3; }"
 	    "button.urma-tabclose:hover { background: #8a2f2f; color: #ecebe3; }"
 	    "button.urma-tabadd { min-width: 28px; min-height: 28px; margin: 0 0 2px 2px;"
 	    "  border-radius: 6px; color: #98a49b; }"
