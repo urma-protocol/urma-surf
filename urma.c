@@ -1108,7 +1108,18 @@ handler(WebKitURISchemeRequest *r, gpointer data)
 }
 
 void
-urma_register(WebKitWebContext *ctx, WebKitSettings *settings)
+urma_harden(WebKitSettings *settings)
+{
+	g_object_set(settings,
+	    "enable-dns-prefetching", FALSE,
+	    "enable-webrtc", FALSE,
+	    "enable-media-stream", FALSE,
+	    "javascript-can-open-windows-automatically", FALSE,
+	    NULL);
+}
+
+void
+urma_register(WebKitWebContext *ctx)
 {
 	WebKitNetworkProxySettings *proxy;
 
@@ -1122,12 +1133,6 @@ urma_register(WebKitWebContext *ctx, WebKitSettings *settings)
 	    webkit_web_context_get_website_data_manager(ctx),
 	    WEBKIT_NETWORK_PROXY_MODE_CUSTOM, proxy);
 	webkit_network_proxy_settings_free(proxy);
-	g_object_set(settings,
-	    "enable-dns-prefetching", FALSE,
-	    "enable-webrtc", FALSE,
-	    "enable-media-stream", FALSE,
-	    "javascript-can-open-windows-automatically", FALSE,
-	    NULL);
 }
 
 /* ---- downloads: from the verified store, never through the engine ------- */

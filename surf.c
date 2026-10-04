@@ -1,9 +1,15 @@
 /* See LICENSE file for copyright and license details.
  *
  * To understand surf, start reading main().
+ *
+ * Shape (urma-surf, native tabs): a Frame is one toplevel window with its
+ * chrome (tab strip, address bar, settings, find bar); a Client is one tab:
+ * its own WebKitWebView, history, title, loading state, URMA name context
+ * and per-page configuration. Every view of the process shares one
+ * WebKitWebContext (one profile: cookies, cache, storage), while isolation
+ * stays per publication origin inside WebKit, as the contract decides.
  */
 #include <sys/file.h>
-#include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <glib.h>
@@ -21,7 +27,6 @@
 #include <gdk/gdk.h>
 #include <gdk/gdkkeysyms.h>
 #include <gdk/gdkx.h>
-#include <gio/gunixfdlist.h>
 #include <glib/gstdio.h>
 #include <gtk/gtk.h>
 #include <gtk/gtkx.h>
@@ -30,7 +35,6 @@
 #include <webkit2/webkit2.h>
 #include <X11/X.h>
 #include <X11/Xatom.h>
-#include <glib.h>
 
 #include "arg.h"
 #include "brand.h"
@@ -103,35 +107,43 @@ typedef struct {
 	int prio;
 } Parameter;
 
-typedef struct Client {
-	GtkWidget *win;
-	/* MODERNISE (urma-surf): inline chrome, so the browser is usable
-	 * without an external dmenu. */
-	GtkWidget *box, *bar, *entry, *load, *status, *overlay;
-	GtkWidget *back, *forward, *reload;
-	/* FACELIFT: brand mark, address pill, verification badge, recovery spinner,
-	 * settings popover, inline find bar. */
-	GtkWidget *brand, *pill, *badge, *spin;
-	GtkWidget *gear, *popover, *findbar, *findentry, *findcount, *focuscombo;
+typedef struct Frame Frame;
+typedef struct Client Client;
+
+/* One window: the chrome and the tabs it holds. */
+struct Frame {
+	GtkWidget *win, *box, *strip, *tabs, *tabadd, *stack;
+	GtkWidget *bar, *brand, *back, *forward, *reload;
+	GtkWidget *pill, *entry, *badge, *spin, *gear, *popover, *focuscombo;
+	GtkWidget *findbar, *findentry, *findcount;
+	Client *active;
+	Window xid;
+	int fullscreen;
+	Frame *next;
+};
+
+/* One tab: the view and everything that belongs to the page in it. */
+struct Client {
+	Frame *f;
+	GtkWidget *overlay, *status, *load, *tab, *tablabel;
+	Parameter *config;      /* the table that applies to the current page */
 	guint zoomflash;
-	int loading;
+	int loading, spinning;
+	char *bstate, *btext, *btip;   /* badge, replayed when the tab is shown */
 	/* URMA: how this tab arrived (name context) and what is shown. */
 	char *urmaname, *urmanet, *urmagenesis, *urmatxid, *urmadisp;
 	WebKitWebView *view;
 	WebKitSettings *settings;
-	WebKitWebContext *context;
 	WebKitWebInspector *inspector;
 	WebKitFindController *finder;
 	WebKitHitTestResult *mousepos;
 	GTlsCertificate *cert, *failedcert;
 	GTlsCertificateFlags tlserr;
-	Window xid;
 	guint64 pageid;
-	int progress, fullscreen, https, insecure, errorpage, errbadge;
+	int progress, https, insecure, errorpage, errbadge;
 	const char *title, *overtitle, *targeturi;
-	const char *needle;
-	struct Client *next;
-} Client;
+	Client *next;
+};
 
 typedef struct {
 	guint mod;
@@ -172,7 +184,6 @@ static char *buildpath(const char *path);
 static char *untildepath(const char *path);
 static const char *getuserhomedir(const char *user);
 static const char *getcurrentuserhomedir(void);
-static Client *newclient(Client *c);
 static void loaduri(Client *c, const Arg *a);
 static const char *geturi(Client *c);
 static void setatom(Client *c, int a, const char *v);
@@ -180,7 +191,7 @@ static const char *getatom(Client *c, int a);
 static void updatetitle(Client *c);
 static void gettogglestats(Client *c);
 static void getpagestats(Client *c);
-static WebKitCookieAcceptPolicy cookiepolicy_get(void);
+static WebKitCookieAcceptPolicy cookiepolicy_get(Client *c);
 static char cookiepolicy_set(const WebKitCookieAcceptPolicy p);
 static void seturiparameters(Client *c, const char *uri, ParamName *params);
 static void setparameter(Client *c, int refresh, ParamName p, const Arg *a);
@@ -192,61 +203,80 @@ static void runscript(Client *c);
 static void evalscript(Client *c, const char *jsstr, ...);
 static void updatewinid(Client *c);
 static void handleplumb(Client *c, const char *uri);
-static void newwindow(Client *c, const Arg *a, int noembed);
 static void spawn(Client *c, const Arg *a);
-static void destroyclient(Client *c);
 static void cleanup(void);
 
+/* Frames and tabs */
+static Frame *newframe(void);
+static void destroyframe(Frame *f);
+static Client *newtab(Frame *f, Client *rc, const char *uri, int foreground);
+static void destroyclient(Client *c);
+static void activatetab(Client *c);
+static void closetab(Client *c);
+static Client *tabat(Frame *f, int index);
+static int tabindex(Client *c);
+static int tabcount(Frame *f);
+static void syncchrome(Frame *f);
+static void tabclicked(GtkButton *b, Client *c);
+static gboolean tabpressed(GtkWidget *w, GdkEventButton *ev, Client *c);
+static void tabcloseclicked(GtkButton *b, Client *c);
+static void tabaddclicked(GtkButton *b, Frame *f);
+static void settablabel(Client *c);
+static Client *clientofview(WebKitWebView *v);
+
 /* GTK/WebKit */
+static WebKitWebContext *sharedcontext(void);
 static WebKitWebView *newview(Client *c, WebKitWebView *rv);
-static void initwebextensions(WebKitWebContext *wc, Client *c);
+static void initwebextensions(WebKitWebContext *wc, gpointer unused);
 static gboolean urmaresolveload(Client *c, const UrmaAddr *ad, const char *tail);
 static void urmadetails(Client *c, const Arg *a);
 static const char *displayuri(Client *c);
 static void urmaclearctx(Client *c);
 static void copylink(Client *c, const Arg *a);
-static void buildchrome(Client *c);
-static GtkWidget *navbutton(const char *label, const char *tip, GCallback cb,
-                            Client *c);
-static void goback(GtkButton *b, Client *c);
-static void goforward(GtkButton *b, Client *c);
+static void buildchrome(Frame *f);
+static GtkWidget *navbutton(const char *icon, const char *tip, GCallback cb,
+                            gpointer data);
+static void goback(GtkButton *b, Frame *f);
+static void goforward(GtkButton *b, Frame *f);
 static void syncnav(Client *c);
-static void reloadstop(GtkButton *b, Client *c);
+static void reloadstop(GtkButton *b, Frame *f);
 static void setloading(Client *c, int loading);
 static void setbadge(Client *c, const char *state, const char *text,
                      const char *tip);
-static void brandclicked(GtkButton *b, Client *c);
-static gboolean pillfocus(GtkWidget *w, GdkEventFocus *ev, Client *c);
+static void paintbadge(Client *c);
+static void setspinning(Client *c, int on);
+static void brandclicked(GtkButton *b, Frame *f);
+static gboolean pillfocus(GtkWidget *w, GdkEventFocus *ev, Frame *f);
 static void fetchnotify(UrmaFetchEvent ev, const char *net, const char *txid,
                         const char *detail, gpointer user);
 static char *webextdir(void);
 static void showfind(Client *c, const Arg *a);
-static void hidefind(Client *c);
-static void findprev(GtkButton *b, Client *c);
-static void findnext(GtkButton *b, Client *c);
-static void findclose(GtkButton *b, Client *c);
-static void findchanged(GtkEditable *e, Client *c);
-static gboolean findkey(GtkWidget *w, GdkEventKey *ev, Client *c);
-static void foundtext(WebKitFindController *f, guint count, Client *c);
-static void failedtext(WebKitFindController *f, Client *c);
+static void hidefind(Frame *f);
+static void findprev(GtkButton *b, Frame *f);
+static void findnext(GtkButton *b, Frame *f);
+static void findclose(GtkButton *b, Frame *f);
+static void findchanged(GtkEditable *e, Frame *f);
+static gboolean findkey(GtkWidget *w, GdkEventKey *ev, Frame *f);
+static void foundtext(WebKitFindController *fc, guint count, Client *c);
+static void failedtext(WebKitFindController *fc, Client *c);
 static void showsettings(Client *c, const Arg *a);
 static gboolean rebuildsettings(gpointer data);
-static GtkWidget *settingsbody(Client *c);
-static GtkWidget *registryrow(Client *c, const char *net);
-static void registrychanged(GtkComboBox *box, Client *c);
-static void applyregistry(Client *c, const char *net, const char *genesis);
-static char *otherregistry(Client *c, const char *net);
+static GtkWidget *settingsbody(Frame *f);
+static GtkWidget *registryrow(Frame *f, const char *net);
+static void registrychanged(GtkComboBox *box, Frame *f);
+static void applyregistry(Frame *f, const char *net, const char *genesis);
+static char *otherregistry(Frame *f, const char *net);
 static void refreshaddresses(void);
-static gboolean switchset(GtkSwitch *s, gboolean state, Client *c);
+static gboolean switchset(GtkSwitch *s, gboolean state, Frame *f);
 static GtkWidget *menuitem(const char *text, const char *accel, GCallback cb,
-                           Client *c);
+                           Frame *f);
 static void showshortcuts(Client *c, const Arg *a);
-static void gearclicked(GtkButton *b, Client *c);
+static void gearclicked(GtkButton *b, Frame *f);
 static gboolean scrollzoom(GtkWidget *w, GdkEvent *e, Client *c);
 static void flashzoom(Client *c);
 static gboolean clearzoomflash(gpointer data);
-static void entryactivate(GtkEntry *e, Client *c);
-static gboolean entrykey(GtkWidget *w, GdkEventKey *ev, Client *c);
+static void entryactivate(GtkEntry *e, Frame *f);
+static gboolean entrykey(GtkWidget *w, GdkEventKey *ev, Frame *f);
 static void showaddress(Client *c, const Arg *a);
 static void togglebar(Client *c, const Arg *a);
 static void setstatus(Client *c, const char *text);
@@ -255,9 +285,8 @@ static GtkWidget *createview(WebKitWebView *v, WebKitNavigationAction *a,
 static gboolean buttonreleased(GtkWidget *w, GdkEvent *e, Client *c);
 static GdkFilterReturn processx(GdkXEvent *xevent, GdkEvent *event,
                                 gpointer d);
-static gboolean winevent(GtkWidget *w, GdkEvent *e, Client *c);
-static void showview(WebKitWebView *v, Client *c);
-static GtkWidget *createwindow(Client *c);
+static gboolean winevent(GtkWidget *w, GdkEvent *e, Frame *f);
+static GtkWidget *createwindow(Frame *f);
 static gboolean loadfailed(WebKitWebView *v, WebKitLoadEvent e, gchar *uri,
                            GError *err, Client *c);
 static gboolean loadfailedtls(WebKitWebView *v, gchar *uri,
@@ -278,14 +307,14 @@ static void decideresource(WebKitPolicyDecision *d, Client *c);
 static void insecurecontent(WebKitWebView *v, WebKitInsecureContentEvent e,
                             Client *c);
 static void downloadstarted(WebKitWebContext *wc, WebKitDownload *d,
-                            Client *c);
+                            gpointer unused);
 static void responsereceived(WebKitDownload *d, GParamSpec *ps, Client *c);
 static void download(Client *c, WebKitURIResponse *r);
 static void webprocessterminated(WebKitWebView *v,
                                  WebKitWebProcessTerminationReason r,
                                  Client *c);
 static void closeview(WebKitWebView *v, Client *c);
-static void destroywin(GtkWidget* w, Client *c);
+static void destroywin(GtkWidget* w, Frame *f);
 
 /* Hotkeys */
 static void pasteuri(GtkClipboard *clipboard, const char *text, gpointer d);
@@ -303,10 +332,14 @@ static void togglefullscreen(Client *c, const Arg *a);
 static void togglecookiepolicy(Client *c, const Arg *a);
 static void toggleinspector(Client *c, const Arg *a);
 static void find(Client *c, const Arg *a);
+static void opentab(Client *c, const Arg *a);
+static void closetabkey(Client *c, const Arg *a);
+static void cycletab(Client *c, const Arg *a);
+static void selecttab(Client *c, const Arg *a);
 
 /* Buttons */
 static void clicknavigate(Client *c, const Arg *a, WebKitHitTestResult *h);
-static void clicknewwindow(Client *c, const Arg *a, WebKitHitTestResult *h);
+static void clicknewtab(Client *c, const Arg *a, WebKitHitTestResult *h);
 static void clickexternplayer(Client *c, const Arg *a, WebKitHitTestResult *h);
 
 static char winid[64];
@@ -319,12 +352,13 @@ static int showxid;
 static int showbar = 1;
 static int cookiepolicy;
 static Display *dpy;
+static Frame *frames;
 static Client *clients;
+static WebKitWebContext *context;   /* one profile for every tab */
 static GdkDevice *gdkkb;
 static char *stylefile;
 static char *fontsdir;
 static const char *useragent;
-static Parameter *curconfig;
 static int modparams[ParameterLast];
 char *argv0;
 
@@ -428,13 +462,11 @@ setup(void)
 
 	gdpy = gdk_display_get_default();
 
-	curconfig = defconfig;
-
 	/* dirs and files */
 	cookiefile = buildfile(cookiefile);
 	scriptfile = buildfile(scriptfile);
 	certdir    = buildpath(certdir);
-	if (curconfig[Ephemeral].val.i)
+	if (defconfig[Ephemeral].val.i)
 		cachedir = NULL;
 	else
 		cachedir   = buildpath(cachedir);
@@ -605,21 +637,328 @@ untildepath(const char *path)
        return apath;
 }
 
+/* ---- frames and tabs ------------------------------------------------------ */
+
+Frame *
+newframe(void)
+{
+	Frame *f;
+	GdkWindow *gwin;
+
+	if (!(f = calloc(1, sizeof(Frame))))
+		die("Cannot malloc!\n");
+	f->next = frames;
+	frames = f;
+
+	f->win = createwindow(f);
+	buildchrome(f);
+	gtk_container_add(GTK_CONTAINER(f->win), f->box);
+	gtk_widget_show_all(f->win);
+	if (!showbar)
+		gtk_widget_hide(f->bar);
+
+	gwin = gtk_widget_get_window(GTK_WIDGET(f->win));
+	f->xid = gdk_x11_window_get_xid(gwin);
+	snprintf(winid, LENGTH(winid), "%lu", f->xid);
+	if (showxid) {
+		gdk_display_sync(gtk_widget_get_display(f->win));
+		puts(winid);
+		fflush(stdout);
+	}
+	if (!defconfig[KioskMode].val.i) {
+		gdk_window_set_events(gwin, GDK_ALL_EVENTS_MASK);
+		gdk_window_add_filter(gwin, processx, f);
+	}
+	return f;
+}
+
+/* A tab: view, overlay (status line, progress line), strip button. The
+ * caller decides whether it comes to the front; the page is loaded last so
+ * every signal already finds a complete tab. */
 Client *
-newclient(Client *rc)
+newtab(Frame *f, Client *rc, const char *uri, int foreground)
 {
 	Client *c;
+	GdkRGBA bgcolor = { 0 };
+	GtkWidget *hb, *close;
 
 	if (!(c = calloc(1, sizeof(Client))))
 		die("Cannot malloc!\n");
-
+	c->f = f;
+	c->config = defconfig;
+	c->progress = 100;
 	c->next = clients;
 	clients = c;
 
-	c->progress = 100;
 	c->view = newview(c, rc ? rc->view : NULL);
+	c->finder = webkit_web_view_get_find_controller(c->view);
+	c->inspector = webkit_web_view_get_inspector(c->view);
+	c->pageid = webkit_web_view_get_page_id(c->view);
+	g_signal_connect(G_OBJECT(c->finder), "found-text",
+	                 G_CALLBACK(foundtext), c);
+	g_signal_connect(G_OBJECT(c->finder), "failed-to-find-text",
+	                 G_CALLBACK(failedtext), c);
 
+	c->load = gtk_progress_bar_new();
+	gtk_style_context_add_class(gtk_widget_get_style_context(c->load),
+	    "urma-load");
+	gtk_widget_set_valign(c->load, GTK_ALIGN_START);
+	gtk_widget_set_no_show_all(c->load, TRUE);
+
+	c->status = gtk_label_new(NULL);
+	gtk_style_context_add_class(gtk_widget_get_style_context(c->status),
+	    "urma-status");
+	gtk_label_set_xalign(GTK_LABEL(c->status), 0.0);
+	gtk_label_set_ellipsize(GTK_LABEL(c->status), PANGO_ELLIPSIZE_MIDDLE);
+	/* FIX (urma-surf): the status label used to be packed into the box, so
+	 * showing it on hover resized the web view and relaid out the whole
+	 * page. As an overlay child it floats above the view at zero cost. */
+	gtk_widget_set_halign(c->status, GTK_ALIGN_START);
+	gtk_widget_set_valign(c->status, GTK_ALIGN_END);
+	gtk_widget_set_no_show_all(c->status, TRUE);
+
+	c->overlay = gtk_overlay_new();
+	gtk_container_add(GTK_CONTAINER(c->overlay), GTK_WIDGET(c->view));
+	gtk_overlay_add_overlay(GTK_OVERLAY(c->overlay), c->status);
+	gtk_overlay_add_overlay(GTK_OVERLAY(c->overlay), c->load);
+	gtk_container_add(GTK_CONTAINER(f->stack), c->overlay);
+	gtk_widget_show_all(c->overlay);
+
+	/* Strip button: title, close. Middle click closes too. */
+	c->tablabel = gtk_label_new("New tab");
+	gtk_label_set_ellipsize(GTK_LABEL(c->tablabel), PANGO_ELLIPSIZE_END);
+	gtk_label_set_width_chars(GTK_LABEL(c->tablabel), 6);
+	gtk_label_set_max_width_chars(GTK_LABEL(c->tablabel), 22);
+	gtk_label_set_xalign(GTK_LABEL(c->tablabel), 0.0);
+	close = navbutton("window-close-symbolic", "Close tab (Ctrl-w)",
+	    G_CALLBACK(tabcloseclicked), c);
+	gtk_style_context_add_class(gtk_widget_get_style_context(close),
+	    "urma-tabclose");
+	gtk_widget_set_sensitive(close, TRUE);
+	hb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+	gtk_box_pack_start(GTK_BOX(hb), c->tablabel, TRUE, TRUE, 0);
+	gtk_box_pack_end(GTK_BOX(hb), close, FALSE, FALSE, 0);
+	c->tab = gtk_button_new();
+	gtk_container_add(GTK_CONTAINER(c->tab), hb);
+	gtk_style_context_add_class(gtk_widget_get_style_context(c->tab),
+	    "urma-tab");
+	gtk_button_set_relief(GTK_BUTTON(c->tab), GTK_RELIEF_NONE);
+	gtk_widget_set_focus_on_click(c->tab, FALSE);
+	g_signal_connect(G_OBJECT(c->tab), "clicked",
+	                 G_CALLBACK(tabclicked), c);
+	g_signal_connect(G_OBJECT(c->tab), "button-press-event",
+	                 G_CALLBACK(tabpressed), c);
+	gtk_box_pack_start(GTK_BOX(f->tabs), c->tab, FALSE, FALSE, 0);
+	gtk_widget_show_all(c->tab);
+
+	if (defconfig[HideBackground].val.i)
+		webkit_web_view_set_background_color(c->view, &bgcolor);
+	if (defconfig[ZoomLevel].val.f != 1.0)
+		webkit_web_view_set_zoom_level(c->view, defconfig[ZoomLevel].val.f);
+
+	if (foreground || !f->active)
+		activatetab(c);
+	if (uri && *uri) {
+		Arg a = { .v = uri };
+		loaduri(c, &a);
+	}
 	return c;
+}
+
+void
+destroyclient(Client *c)
+{
+	Client *p;
+
+	/* The zoom readout timer holds this client; it must not outlive it. */
+	if (c->zoomflash) {
+		g_source_remove(c->zoomflash);
+		c->zoomflash = 0;
+	}
+	g_signal_handlers_disconnect_by_data(c->view, c);
+	g_signal_handlers_disconnect_by_data(c->finder, c);
+	webkit_web_view_stop_loading(c->view);
+	urmaclearctx(c);
+	g_clear_object(&c->failedcert);
+	gtk_widget_destroy(c->tab);
+	gtk_widget_destroy(c->overlay);
+
+	for (p = clients; p && p->next != c; p = p->next)
+		;
+	if (p)
+		p->next = c->next;
+	else
+		clients = c->next;
+	g_free(c->bstate);
+	g_free(c->btext);
+	g_free(c->btip);
+	free(c);
+}
+
+void
+destroyframe(Frame *f)
+{
+	Frame *p;
+	Client *c, *n;
+
+	for (c = clients; c; c = n) {
+		n = c->next;
+		if (c->f == f)
+			destroyclient(c);
+	}
+	for (p = frames; p && p->next != f; p = p->next)
+		;
+	if (p)
+		p->next = f->next;
+	else
+		frames = f->next;
+	free(f);
+}
+
+int
+tabcount(Frame *f)
+{
+	GList *l = gtk_container_get_children(GTK_CONTAINER(f->tabs));
+	int n = g_list_length(l);
+
+	g_list_free(l);
+	return n;
+}
+
+/* Tabs in strip order: the strip's children are the tab buttons. */
+Client *
+tabat(Frame *f, int index)
+{
+	GList *l = gtk_container_get_children(GTK_CONTAINER(f->tabs));
+	GtkWidget *w = g_list_nth_data(l, index);
+	Client *c;
+
+	g_list_free(l);
+	for (c = clients; c; c = c->next)
+		if (c->tab == w)
+			return c;
+	return NULL;
+}
+
+int
+tabindex(Client *c)
+{
+	GList *l = gtk_container_get_children(GTK_CONTAINER(c->f->tabs));
+	int i = g_list_index(l, c->tab);
+
+	g_list_free(l);
+	return i;
+}
+
+void
+activatetab(Client *c)
+{
+	Frame *f = c->f;
+	Client *k;
+
+	if (f->active == c)
+		return;
+	hidefind(f);
+	f->active = c;
+	gtk_stack_set_visible_child(GTK_STACK(f->stack), c->overlay);
+	for (k = clients; k; k = k->next) {
+		if (k->f != f)
+			continue;
+		if (k == c)
+			gtk_style_context_add_class(gtk_widget_get_style_context(k->tab), "active");
+		else
+			gtk_style_context_remove_class(gtk_widget_get_style_context(k->tab), "active");
+	}
+	syncchrome(f);
+	gtk_widget_grab_focus(GTK_WIDGET(c->view));
+}
+
+/* Closing the active tab moves to its right neighbour, else the left one;
+ * closing the last tab closes the window. */
+void
+closetab(Client *c)
+{
+	Frame *f = c->f;
+	int i = tabindex(c), n = tabcount(f);
+	Client *to;
+
+	if (n <= 1) {
+		gtk_widget_destroy(f->win);
+		return;
+	}
+	if (f->active == c) {
+		to = tabat(f, i + 1 < n ? i + 1 : i - 1);
+		if (to)
+			activatetab(to);
+	}
+	destroyclient(c);
+}
+
+/* The chrome shows the active tab: address, badge, spinner, reload or stop,
+ * history buttons, title, the X property other tools read. */
+void
+syncchrome(Frame *f)
+{
+	Client *c = f->active;
+
+	if (!c)
+		return;
+	if (!gtk_widget_has_focus(f->entry))
+		gtk_entry_set_text(GTK_ENTRY(f->entry), displayuri(c));
+	paintbadge(c);
+	setspinning(c, c->spinning);
+	setloading(c, c->loading);
+	syncnav(c);
+	updatetitle(c);
+	setatom(c, AtomUri, geturi(c));
+}
+
+void
+tabclicked(GtkButton *b, Client *c)
+{
+	activatetab(c);
+}
+
+gboolean
+tabpressed(GtkWidget *w, GdkEventButton *ev, Client *c)
+{
+	if (ev->button == 2) {
+		closetab(c);
+		return TRUE;
+	}
+	return FALSE;
+}
+
+void
+tabcloseclicked(GtkButton *b, Client *c)
+{
+	closetab(c);
+}
+
+void
+tabaddclicked(GtkButton *b, Frame *f)
+{
+	opentab(f->active, NULL);
+}
+
+void
+settablabel(Client *c)
+{
+	const char *t = c->title && *c->title ? c->title : geturi(c);
+
+	gtk_label_set_text(GTK_LABEL(c->tablabel), t);
+	gtk_widget_set_tooltip_text(c->tab, displayuri(c));
+}
+
+Client *
+clientofview(WebKitWebView *v)
+{
+	Client *c;
+
+	for (c = clients; c; c = c->next)
+		if (c->view == v)
+			return c;
+	return NULL;
 }
 
 void
@@ -706,10 +1045,13 @@ geturi(Client *c)
 	return uri;
 }
 
+/* The X properties describe the window's active tab. */
 void
 setatom(Client *c, int a, const char *v)
 {
-	XChangeProperty(dpy, c->xid,
+	if (c->f->active != c)
+		return;
+	XChangeProperty(dpy, c->f->xid,
 	                atoms[a], atoms[AtomUTF8], 8, PropModeReplace,
 	                (unsigned char *)v, strlen(v) + 1);
 	XSync(dpy, False);
@@ -725,7 +1067,7 @@ getatom(Client *c, int a)
 	unsigned char *p = NULL;
 
 	XSync(dpy, False);
-	XGetWindowProperty(dpy, c->xid,
+	XGetWindowProperty(dpy, c->f->xid,
 	                   atoms[a], 0L, BUFSIZ, False, atoms[AtomUTF8],
 	                   &adummy, &idummy, &ldummy, &ldummy, &p);
 	if (p)
@@ -744,7 +1086,10 @@ updatetitle(Client *c)
 	const char *name = c->overtitle ? c->overtitle :
 	                   c->title ? c->title : "";
 
-	if (curconfig[ShowIndicators].val.i) {
+	settablabel(c);
+	if (c->f->active != c)
+		return;
+	if (c->config[ShowIndicators].val.i) {
 		gettogglestats(c);
 		getpagestats(c);
 
@@ -755,11 +1100,11 @@ updatetitle(Client *c)
 			title = g_strdup_printf("%s:%s | %s",
 			        togglestats, pagestats, name);
 
-		gtk_window_set_title(GTK_WINDOW(c->win), title);
+		gtk_window_set_title(GTK_WINDOW(c->f->win), title);
 		g_free(title);
 	} else {
 		title = *name ? g_strdup_printf("%s — URMA", name) : g_strdup("URMA");
-		gtk_window_set_title(GTK_WINDOW(c->win), title);
+		gtk_window_set_title(GTK_WINDOW(c->f->win), title);
 		g_free(title);
 	}
 }
@@ -767,15 +1112,15 @@ updatetitle(Client *c)
 void
 gettogglestats(Client *c)
 {
-	togglestats[0] = cookiepolicy_set(cookiepolicy_get());
-	togglestats[1] = curconfig[CaretBrowsing].val.i ?   'C' : 'c';
-	togglestats[2] = curconfig[Geolocation].val.i ?     'G' : 'g';
-	togglestats[3] = curconfig[DiskCache].val.i ?       'D' : 'd';
-	togglestats[4] = curconfig[LoadImages].val.i ?      'I' : 'i';
-	togglestats[5] = curconfig[JavaScript].val.i ?      'S' : 's';
-	togglestats[6] = curconfig[Style].val.i ?           'M' : 'm';
-	togglestats[8] = curconfig[Certificate].val.i ?     'X' : 'x';
-	togglestats[9] = curconfig[StrictTLS].val.i ?       'T' : 't';
+	togglestats[0] = cookiepolicy_set(cookiepolicy_get(c));
+	togglestats[1] = c->config[CaretBrowsing].val.i ?   'C' : 'c';
+	togglestats[2] = c->config[Geolocation].val.i ?     'G' : 'g';
+	togglestats[3] = c->config[DiskCache].val.i ?       'D' : 'd';
+	togglestats[4] = c->config[LoadImages].val.i ?      'I' : 'i';
+	togglestats[5] = c->config[JavaScript].val.i ?      'S' : 's';
+	togglestats[6] = c->config[Style].val.i ?           'M' : 'm';
+	togglestats[8] = c->config[Certificate].val.i ?     'X' : 'x';
+	togglestats[9] = c->config[StrictTLS].val.i ?       'T' : 't';
 }
 
 void
@@ -789,9 +1134,12 @@ getpagestats(Client *c)
 }
 
 WebKitCookieAcceptPolicy
-cookiepolicy_get(void)
+cookiepolicy_get(Client *c)
 {
-	switch (((char *)curconfig[CookiePolicies].val.v)[cookiepolicy]) {
+	const char *policies = c ? c->config[CookiePolicies].val.v
+	                         : defconfig[CookiePolicies].val.v;
+
+	switch (policies[cookiepolicy]) {
 	case 'a':
 		return WEBKIT_COOKIE_POLICY_ACCEPT_NEVER;
 	case '@':
@@ -816,6 +1164,8 @@ cookiepolicy_set(const WebKitCookieAcceptPolicy p)
 	}
 }
 
+/* Which parameter table applies to this tab's page: the matching per-URI
+ * table or the defaults. It is the tab's, never the process's. */
 void
 seturiparameters(Client *c, const char *uri, ParamName *params)
 {
@@ -831,19 +1181,19 @@ seturiparameters(Client *c, const char *uri, ParamName *params)
 		}
 	}
 
-	curconfig = uriconfig ? uriconfig : defconfig;
+	c->config = uriconfig ? uriconfig : defconfig;
 
 	for (i = 0; (p = params[i]) != ParameterLast; ++i) {
 		switch(p) {
 		default:
-			if (!(defconfig[p].prio < curconfig[p].prio ||
+			if (!(defconfig[p].prio < c->config[p].prio ||
 			    defconfig[p].prio < modparams[p]))
 				continue;
 			FALLTHROUGH;
 		case Certificate:
 		case CookiePolicies:
 		case Style:
-			setparameter(c, 0, p, &curconfig[p].val);
+			setparameter(c, 0, p, &c->config[p].val);
 		}
 	}
 }
@@ -853,7 +1203,7 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 {
 	GdkRGBA bgcolor = { 0 };
 
-	modparams[p] = curconfig[p].prio;
+	modparams[p] = c->config[p].prio;
 
 	switch (p) {
 	case AccessMicrophone:
@@ -870,8 +1220,8 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 		return; /* do not update */
 	case CookiePolicies:
 		webkit_cookie_manager_set_accept_policy(
-		    webkit_web_context_get_cookie_manager(c->context),
-		    cookiepolicy_get());
+		    webkit_web_context_get_cookie_manager(context),
+		    cookiepolicy_get(c));
 		refresh = 0;
 		break;
 	case DarkMode:
@@ -879,7 +1229,7 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 		             "gtk-application-prefer-dark-theme", a->i, NULL);
 		return;
 	case DiskCache:
-		webkit_web_context_set_cache_model(c->context, a->i ?
+		webkit_web_context_set_cache_model(context, a->i ?
 		    WEBKIT_CACHE_MODEL_WEB_BROWSER :
 		    WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER);
 		return; /* do not update */
@@ -928,12 +1278,6 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 	case RunInFullscreen:
 		return; /* do nothing */
 	case ScrollBars:
-		/* Disabled until we write some WebKitWebExtension for
-		 * manipulating the DOM directly.
-		enablescrollbars = !enablescrollbars;
-		evalscript(c, "document.documentElement.style.overflow = '%s'",
-		    enablescrollbars ? "auto" : "hidden");
-		*/
 		return; /* do not update */
 	case ShowIndicators:
 		break;
@@ -945,8 +1289,7 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 		    c->settings, a->i);
 		break;
 	case SpellChecking:
-		webkit_web_context_set_spell_checking_enabled(
-		    c->context, a->i);
+		webkit_web_context_set_spell_checking_enabled(context, a->i);
 		return; /* do not update */
 	case SpellLanguages:
 		return; /* do nothing */
@@ -1010,13 +1353,12 @@ setcert(Client *c, const char *uri)
 	if ((uri = strstr(uri, "https://"))) {
 		uri += sizeof("https://") - 1;
 		host = g_strndup(uri, strchr(uri, '/') - uri);
-		webkit_web_context_allow_tls_certificate_for_host(c->context,
+		webkit_web_context_allow_tls_certificate_for_host(context,
 		    cert, host);
 		g_free(host);
 	}
 
 	g_object_unref(cert);
-
 }
 
 const char *
@@ -1088,7 +1430,7 @@ evalscript(Client *c, const char *jsstr, ...)
 void
 updatewinid(Client *c)
 {
-	snprintf(winid, LENGTH(winid), "%lu", c->xid);
+	snprintf(winid, LENGTH(winid), "%lu", c->f->xid);
 }
 
 void
@@ -1096,60 +1438,6 @@ handleplumb(Client *c, const char *uri)
 {
 	Arg a = (Arg)PLUMB(uri);
 	spawn(c, &a);
-}
-
-void
-newwindow(Client *c, const Arg *a, int noembed)
-{
-	int i = 0;
-	char tmp[64];
-	const char *cmd[29], *uri;
-	const Arg arg = { .v = cmd };
-
-	cmd[i++] = argv0;
-	cmd[i++] = "-a";
-	cmd[i++] = curconfig[CookiePolicies].val.v;
-	cmd[i++] = curconfig[ScrollBars].val.i ? "-B" : "-b";
-	if (cookiefile && g_strcmp0(cookiefile, "")) {
-		cmd[i++] = "-c";
-		cmd[i++] = cookiefile;
-	}
-	if (stylefile && g_strcmp0(stylefile, "")) {
-		cmd[i++] = "-C";
-		cmd[i++] = stylefile;
-	}
-	cmd[i++] = curconfig[DiskCache].val.i ? "-D" : "-d";
-	if (embed && !noembed) {
-		cmd[i++] = "-e";
-		snprintf(tmp, LENGTH(tmp), "%lu", embed);
-		cmd[i++] = tmp;
-	}
-	cmd[i++] = curconfig[RunInFullscreen].val.i ? "-F" : "-f" ;
-	cmd[i++] = curconfig[Geolocation].val.i ?     "-G" : "-g" ;
-	cmd[i++] = curconfig[LoadImages].val.i ?      "-I" : "-i" ;
-	cmd[i++] = curconfig[KioskMode].val.i ?       "-K" : "-k" ;
-	cmd[i++] = curconfig[Style].val.i ?           "-M" : "-m" ;
-	cmd[i++] = curconfig[Inspector].val.i ?       "-N" : "-n" ;
-	if (scriptfile && g_strcmp0(scriptfile, "")) {
-		cmd[i++] = "-r";
-		cmd[i++] = scriptfile;
-	}
-	cmd[i++] = curconfig[JavaScript].val.i ? "-S" : "-s";
-	cmd[i++] = curconfig[StrictTLS].val.i ? "-T" : "-t";
-	if (fulluseragent && g_strcmp0(fulluseragent, "")) {
-		cmd[i++] = "-u";
-		cmd[i++] = fulluseragent;
-	}
-	if (showxid)
-		cmd[i++] = "-w";
-	cmd[i++] = curconfig[Certificate].val.i ? "-X" : "-x" ;
-	/* do not keep zoom level */
-	cmd[i++] = "--";
-	if ((uri = a->v))
-		cmd[i++] = uri;
-	cmd[i] = NULL;
-
-	spawn(c, &arg);
 }
 
 void
@@ -1175,35 +1463,10 @@ spawn(Client *c, const Arg *a)
 }
 
 void
-destroyclient(Client *c)
-{
-	Client *p;
-
-	/* The zoom readout timer holds this client; it must not outlive it. */
-	if (c->zoomflash) {
-		g_source_remove(c->zoomflash);
-		c->zoomflash = 0;
-	}
-	urmaclearctx(c);
-	webkit_web_view_stop_loading(c->view);
-	/* Not needed, has already been called
-	gtk_widget_destroy(c->win);
-	 */
-
-	for (p = clients; p && p->next != c; p = p->next)
-		;
-	if (p)
-		p->next = c->next;
-	else
-		clients = c->next;
-	free(c);
-}
-
-void
 cleanup(void)
 {
-	while (clients)
-		destroyclient(clients);
+	while (frames)
+		destroyframe(frames);
 
 	g_free(cookiefile);
 	g_free(scriptfile);
@@ -1213,40 +1476,92 @@ cleanup(void)
 	XCloseDisplay(dpy);
 }
 
+/* One WebKitWebContext per process: the normal browser profile, shared by
+ * every tab and window. Cookies, cache, storage and the page network black
+ * hole belong to it; the urma:// handler is registered on it once. */
+WebKitWebContext *
+sharedcontext(void)
+{
+	WebKitCookieManager *cookiemanager;
+
+	if (context)
+		return context;
+	if (defconfig[Ephemeral].val.i) {
+		context = webkit_web_context_new_ephemeral();
+	} else {
+		context = webkit_web_context_new_with_website_data_manager(
+		          webkit_website_data_manager_new(
+		          "base-cache-directory", cachedir,
+		          "base-data-directory", cachedir,
+		          NULL));
+	}
+	cookiemanager = webkit_web_context_get_cookie_manager(context);
+
+	webkit_website_data_manager_set_tls_errors_policy(
+	    webkit_web_context_get_website_data_manager(context),
+	    defconfig[StrictTLS].val.i ? WEBKIT_TLS_ERRORS_POLICY_FAIL :
+	    WEBKIT_TLS_ERRORS_POLICY_IGNORE);
+	webkit_web_context_set_cache_model(context,
+	    defconfig[DiskCache].val.i ? WEBKIT_CACHE_MODEL_WEB_BROWSER :
+	    WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER);
+	/* Currently only works with text file to be compatible with curl */
+	if (!defconfig[Ephemeral].val.i)
+		webkit_cookie_manager_set_persistent_storage(cookiemanager,
+		    cookiefile, WEBKIT_COOKIE_PERSISTENT_STORAGE_TEXT);
+	webkit_cookie_manager_set_accept_policy(cookiemanager,
+	    cookiepolicy_get(NULL));
+	webkit_web_context_set_preferred_languages(context,
+	    defconfig[PreferredLanguages].val.v);
+	/* Touching the spell checker loads the enchant brokers (and their
+	 * missing-plugin warnings); only do it when it is on. */
+	if (defconfig[SpellChecking].val.i) {
+		webkit_web_context_set_spell_checking_languages(context,
+		    defconfig[SpellLanguages].val.v);
+		webkit_web_context_set_spell_checking_enabled(context, TRUE);
+	}
+
+	g_signal_connect(G_OBJECT(context), "download-started",
+	                 G_CALLBACK(downloadstarted), NULL);
+	g_signal_connect(G_OBJECT(context), "initialize-web-extensions",
+	                 G_CALLBACK(initwebextensions), NULL);
+
+	/* URMA: scheme handler, secure scheme, page network black hole. */
+	urma_register(context);
+	return context;
+}
+
 WebKitWebView *
 newview(Client *c, WebKitWebView *rv)
 {
 	WebKitWebView *v;
 	WebKitSettings *settings;
-	WebKitWebContext *context;
-	WebKitCookieManager *cookiemanager;
 	WebKitUserContentManager *contentmanager;
+	Parameter *cfg = defconfig;
 
 	/* Webview */
 	if (rv) {
+		/* window.open: the opener relationship is kept, so the new tab
+		 * shares the opener's web process, settings and context. */
 		v = WEBKIT_WEB_VIEW(webkit_web_view_new_with_related_view(rv));
-		context = webkit_web_view_get_context(v);
 		settings = webkit_web_view_get_settings(v);
 	} else {
 		settings = webkit_settings_new_with_settings(
-		   "allow-file-access-from-file-urls", curconfig[FileURLsCrossAccess].val.i,
-		   "allow-universal-access-from-file-urls", curconfig[FileURLsCrossAccess].val.i,
-		   "auto-load-images", curconfig[LoadImages].val.i,
-		   "default-charset", curconfig[DefaultCharset].val.v,
-		   "default-font-size", curconfig[FontSize].val.i,
-		   "enable-caret-browsing", curconfig[CaretBrowsing].val.i,
-		   "enable-developer-extras", curconfig[Inspector].val.i,
-		   "enable-dns-prefetching", curconfig[DNSPrefetch].val.i,
-		   "enable-html5-database", curconfig[DiskCache].val.i,
-		   "enable-html5-local-storage", curconfig[DiskCache].val.i,
-		   "enable-javascript", curconfig[JavaScript].val.i,
-		   "enable-site-specific-quirks", curconfig[SiteQuirks].val.i,
-		   "enable-smooth-scrolling", curconfig[SmoothScrolling].val.i,
-		   "enable-webgl", curconfig[WebGL].val.i,
-		   "media-playback-requires-user-gesture", curconfig[MediaManualPlay].val.i,
+		   "allow-file-access-from-file-urls", cfg[FileURLsCrossAccess].val.i,
+		   "allow-universal-access-from-file-urls", cfg[FileURLsCrossAccess].val.i,
+		   "auto-load-images", cfg[LoadImages].val.i,
+		   "default-charset", cfg[DefaultCharset].val.v,
+		   "default-font-size", cfg[FontSize].val.i,
+		   "enable-caret-browsing", cfg[CaretBrowsing].val.i,
+		   "enable-developer-extras", cfg[Inspector].val.i,
+		   "enable-dns-prefetching", cfg[DNSPrefetch].val.i,
+		   "enable-html5-database", cfg[DiskCache].val.i,
+		   "enable-html5-local-storage", cfg[DiskCache].val.i,
+		   "enable-javascript", cfg[JavaScript].val.i,
+		   "enable-site-specific-quirks", cfg[SiteQuirks].val.i,
+		   "enable-smooth-scrolling", cfg[SmoothScrolling].val.i,
+		   "enable-webgl", cfg[WebGL].val.i,
+		   "media-playback-requires-user-gesture", cfg[MediaManualPlay].val.i,
 		   NULL);
-/* For more interesting settings, have a look at
- * http://webkitgtk.org/reference/webkit2gtk/stable/WebKitSettings.html */
 
 		/* FACELIFT: pages that name no font get the embedded families
 		 * (registered in the web process by the extension). Serif is
@@ -1265,60 +1580,15 @@ newview(Client *c, WebKitWebView *rv)
 		}
 		useragent = webkit_settings_get_user_agent(settings);
 
+		/* URMA: settings that close side channels, on every settings
+		 * object a view starts with. */
+		urma_harden(settings);
+
 		contentmanager = webkit_user_content_manager_new();
-
-		if (curconfig[Ephemeral].val.i) {
-			context = webkit_web_context_new_ephemeral();
-		} else {
-			context = webkit_web_context_new_with_website_data_manager(
-			          webkit_website_data_manager_new(
-			          "base-cache-directory", cachedir,
-			          "base-data-directory", cachedir,
-			          NULL));
-		}
-
-		cookiemanager = webkit_web_context_get_cookie_manager(context);
-
-		/* TLS */
-		webkit_website_data_manager_set_tls_errors_policy(
-		    webkit_web_context_get_website_data_manager(context),
-		    curconfig[StrictTLS].val.i ? WEBKIT_TLS_ERRORS_POLICY_FAIL :
-		    WEBKIT_TLS_ERRORS_POLICY_IGNORE);
-		/* disk cache */
-		webkit_web_context_set_cache_model(context,
-		    curconfig[DiskCache].val.i ? WEBKIT_CACHE_MODEL_WEB_BROWSER :
-		    WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER);
-
-		/* Currently only works with text file to be compatible with curl */
-		if (!curconfig[Ephemeral].val.i)
-			webkit_cookie_manager_set_persistent_storage(cookiemanager,
-			    cookiefile, WEBKIT_COOKIE_PERSISTENT_STORAGE_TEXT);
-		/* cookie policy */
-		webkit_cookie_manager_set_accept_policy(cookiemanager,
-		    cookiepolicy_get());
-		/* languages */
-		webkit_web_context_set_preferred_languages(context,
-		    curconfig[PreferredLanguages].val.v);
-		/* Touching the spell checker loads the enchant brokers (and
-		 * their missing-plugin warnings); only do it when it is on. */
-		if (curconfig[SpellChecking].val.i) {
-			webkit_web_context_set_spell_checking_languages(context,
-			    curconfig[SpellLanguages].val.v);
-			webkit_web_context_set_spell_checking_enabled(context, TRUE);
-		}
-
-		g_signal_connect(G_OBJECT(context), "download-started",
-		                 G_CALLBACK(downloadstarted), c);
-		g_signal_connect(G_OBJECT(context), "initialize-web-extensions",
-		                 G_CALLBACK(initwebextensions), c);
-
-		/* URMA: scheme handler, secure scheme, page network black hole. */
-		urma_register(context, settings);
-
 		v = g_object_new(WEBKIT_TYPE_WEB_VIEW,
 		    "settings", settings,
 		    "user-content-manager", contentmanager,
-		    "web-context", context,
+		    "web-context", sharedcontext(),
 		    NULL);
 	}
 
@@ -1348,15 +1618,12 @@ newview(Client *c, WebKitWebView *rv)
 			 G_CALLBACK(mousetargetchanged), c);
 	g_signal_connect(G_OBJECT(v), "permission-request",
 			 G_CALLBACK(permissionrequested), c);
-	g_signal_connect(G_OBJECT(v), "ready-to-show",
-			 G_CALLBACK(showview), c);
 	g_signal_connect(G_OBJECT(v), "web-process-terminated",
 			 G_CALLBACK(webprocessterminated), c);
 
-	c->context = context;
 	c->settings = settings;
 
-	setparameter(c, 0, DarkMode, &curconfig[DarkMode].val);
+	setparameter(c, 0, DarkMode, &cfg[DarkMode].val);
 
 	return v;
 }
@@ -1382,7 +1649,7 @@ webextdir(void)
 }
 
 void
-initwebextensions(WebKitWebContext *wc, Client *c)
+initwebextensions(WebKitWebContext *wc, gpointer unused)
 {
 	char *dir = webextdir();
 
@@ -1419,7 +1686,7 @@ urmaresolveload(Client *c, const UrmaAddr *ad, const char *tail)
 	GError *err = NULL;
 
 	if (ad->genesis[0]
-	    && !urma_registry_switch_prompt(GTK_WINDOW(c->win), ad->net, ad->genesis)) {
+	    && !urma_registry_switch_prompt(GTK_WINDOW(c->f->win), ad->net, ad->genesis)) {
 		setstatus(c, "registry switch declined; nothing resolved");
 		return FALSE;
 	}
@@ -1488,7 +1755,7 @@ urmadetails(Client *c, const Arg *a)
 	}
 	/* FACELIFT: the same facts as before, laid out as a key/value sheet:
 	 * dim keys, selectable monospace values, wrapped hex. */
-	d = gtk_dialog_new_with_buttons("URMA details", GTK_WINDOW(c->win),
+	d = gtk_dialog_new_with_buttons("URMA details", GTK_WINDOW(c->f->win),
 	    GTK_DIALOG_DESTROY_WITH_PARENT, "_Close", GTK_RESPONSE_CLOSE, NULL);
 	gtk_style_context_add_class(gtk_widget_get_style_context(d), "urma-details");
 	gtk_window_set_resizable(GTK_WINDOW(d), FALSE);
@@ -1538,6 +1805,8 @@ urmadetails(Client *c, const Arg *a)
 	g_free(text);
 }
 
+/* window.open and friends: a new tab in the same window, in front, with the
+ * opener relationship WebKit expects. */
 GtkWidget *
 createview(WebKitWebView *v, WebKitNavigationAction *a, Client *c)
 {
@@ -1549,7 +1818,6 @@ createview(WebKitWebView *v, WebKitNavigationAction *a, Client *c)
 		 * popup windows of type “other” are almost always triggered
 		 * by user gesture, so inverse the logic here
 		 */
-/* instead of this, compare destination uri to mouse-over uri for validating window */
 		if (webkit_navigation_action_is_user_gesture(a))
 			return NULL;
 		FALLTHROUGH;
@@ -1558,7 +1826,7 @@ createview(WebKitWebView *v, WebKitNavigationAction *a, Client *c)
 	case WEBKIT_NAVIGATION_TYPE_BACK_FORWARD: /* fallthrough */
 	case WEBKIT_NAVIGATION_TYPE_RELOAD: /* fallthrough */
 	case WEBKIT_NAVIGATION_TYPE_FORM_RESUBMITTED:
-		n = newclient(c);
+		n = newtab(c->f, c, NULL, 1);
 		break;
 	default:
 		return NULL;
@@ -1591,20 +1859,20 @@ buttonreleased(GtkWidget *w, GdkEvent *e, Client *c)
 GdkFilterReturn
 processx(GdkXEvent *e, GdkEvent *event, gpointer d)
 {
-	Client *c = (Client *)d;
+	Frame *f = d;
 	XPropertyEvent *ev;
 	Arg a;
 
-	if (((XEvent *)e)->type == PropertyNotify) {
+	if (((XEvent *)e)->type == PropertyNotify && f->active) {
 		ev = &((XEvent *)e)->xproperty;
 		if (ev->state == PropertyNewValue) {
 			if (ev->atom == atoms[AtomFind]) {
-				find(c, NULL);
+				find(f->active, NULL);
 
 				return GDK_FILTER_REMOVE;
 			} else if (ev->atom == atoms[AtomGo]) {
-				a.v = getatom(c, AtomGo);
-				loaduri(c, &a);
+				a.v = getatom(f->active, AtomGo);
+				loaduri(f->active, &a);
 
 				return GDK_FILTER_REMOVE;
 			}
@@ -1614,10 +1882,13 @@ processx(GdkXEvent *e, GdkEvent *event, gpointer d)
 }
 
 gboolean
-winevent(GtkWidget *w, GdkEvent *e, Client *c)
+winevent(GtkWidget *w, GdkEvent *e, Frame *f)
 {
+	Client *c = f->active;
 	size_t i;
 
+	if (!c)
+		return FALSE;
 	switch (e->type) {
 	case GDK_ENTER_NOTIFY:
 		c->overtitle = c->targeturi;
@@ -1628,9 +1899,9 @@ winevent(GtkWidget *w, GdkEvent *e, Client *c)
 		 * focus it owns the keyboard; those entries handle Esc and
 		 * Ctrl-L themselves. Everything else goes to the shell first,
 		 * so a page never swallows a shell shortcut. */
-		if (GTK_IS_ENTRY(gtk_window_get_focus(GTK_WINDOW(c->win))))
+		if (GTK_IS_ENTRY(gtk_window_get_focus(GTK_WINDOW(f->win))))
 			return FALSE;
-		if (!curconfig[KioskMode].val.i) {
+		if (!c->config[KioskMode].val.i) {
 			for (i = 0; i < LENGTH(keys); ++i) {
 				if (gdk_keyval_to_lower(e->key.keyval) ==
 				    keys[i].keyval &&
@@ -1650,7 +1921,7 @@ winevent(GtkWidget *w, GdkEvent *e, Client *c)
 	case GDK_WINDOW_STATE:
 		if (e->window_state.changed_mask ==
 		    GDK_WINDOW_STATE_FULLSCREEN)
-			c->fullscreen = e->window_state.new_window_state &
+			f->fullscreen = e->window_state.new_window_state &
 			                GDK_WINDOW_STATE_FULLSCREEN;
 		break;
 	default:
@@ -1661,80 +1932,29 @@ winevent(GtkWidget *w, GdkEvent *e, Client *c)
 }
 
 void
-showview(WebKitWebView *v, Client *c)
-{
-	GdkRGBA bgcolor = { 0 };
-	GdkWindow *gwin;
-
-	c->finder = webkit_web_view_get_find_controller(c->view);
-	c->inspector = webkit_web_view_get_inspector(c->view);
-
-	c->pageid = webkit_web_view_get_page_id(c->view);
-	c->win = createwindow(c);
-
-	buildchrome(c);
-	gtk_container_add(GTK_CONTAINER(c->win), c->box);
-	gtk_widget_show_all(c->win);
-	gtk_widget_hide(c->load);
-	if (!showbar)
-		gtk_widget_hide(c->bar);
-	gtk_widget_grab_focus(GTK_WIDGET(c->view));
-
-	gwin = gtk_widget_get_window(GTK_WIDGET(c->win));
-	c->xid = gdk_x11_window_get_xid(gwin);
-	updatewinid(c);
-	if (showxid) {
-		gdk_display_sync(gtk_widget_get_display(c->win));
-		puts(winid);
-		fflush(stdout);
-	}
-
-	if (curconfig[HideBackground].val.i)
-		webkit_web_view_set_background_color(c->view, &bgcolor);
-
-	if (!curconfig[KioskMode].val.i) {
-		gdk_window_set_events(gwin, GDK_ALL_EVENTS_MASK);
-		gdk_window_add_filter(gwin, processx, c);
-	}
-
-	if (curconfig[RunInFullscreen].val.i)
-		togglefullscreen(c, NULL);
-
-	if (curconfig[ZoomLevel].val.f != 1.0)
-		webkit_web_view_set_zoom_level(c->view,
-		                               curconfig[ZoomLevel].val.f);
-
-	setatom(c, AtomFind, "");
-	setatom(c, AtomUri, "about:blank");
-}
-
-/* MODERNISE (urma-surf): minimal inline chrome. One entry for the address,
- * one thin progress bar, one status line. Plain GTK, no new dependency and
- * no toolbar of buttons; keyboard stays the primary interface. */
-void
-entryactivate(GtkEntry *e, Client *c)
+entryactivate(GtkEntry *e, Frame *f)
 {
 	Arg a = { .v = gtk_entry_get_text(e) };
 
-	loaduri(c, &a);
-	gtk_widget_grab_focus(GTK_WIDGET(c->view));
+	loaduri(f->active, &a);
+	gtk_widget_grab_focus(GTK_WIDGET(f->active->view));
 }
 
 gboolean
-entrykey(GtkWidget *w, GdkEventKey *ev, Client *c)
+entrykey(GtkWidget *w, GdkEventKey *ev, Frame *f)
 {
 	if (ev->keyval == GDK_KEY_Escape) {
-		gtk_entry_set_text(GTK_ENTRY(c->entry), displayuri(c));
-		gtk_widget_grab_focus(GTK_WIDGET(c->view));
+		gtk_entry_set_text(GTK_ENTRY(f->entry), displayuri(f->active));
+		gtk_widget_grab_focus(GTK_WIDGET(f->active->view));
 		return TRUE;
 	}
 	/* Ctrl-L inside the address re-selects everything, like a browser. */
 	if ((ev->state & GDK_CONTROL_MASK) && gdk_keyval_to_lower(ev->keyval) == GDK_KEY_l) {
-		gtk_editable_select_region(GTK_EDITABLE(c->entry), 0, -1);
+		gtk_editable_select_region(GTK_EDITABLE(f->entry), 0, -1);
 		return TRUE;
 	}
 	if ((ev->state & GDK_CONTROL_MASK) && gdk_keyval_to_lower(ev->keyval) == GDK_KEY_f) {
-		showfind(c, NULL);
+		showfind(f->active, NULL);
 		return TRUE;
 	}
 	return FALSE;
@@ -1743,17 +1963,19 @@ entrykey(GtkWidget *w, GdkEventKey *ev, Client *c)
 void
 showaddress(Client *c, const Arg *a)
 {
-	gtk_widget_show(c->bar);
-	gtk_entry_set_text(GTK_ENTRY(c->entry), displayuri(c));
-	gtk_widget_grab_focus(c->entry);
-	gtk_editable_select_region(GTK_EDITABLE(c->entry), 0, -1);
+	Frame *f = c->f;
+
+	gtk_widget_show(f->bar);
+	gtk_entry_set_text(GTK_ENTRY(f->entry), displayuri(c));
+	gtk_widget_grab_focus(f->entry);
+	gtk_editable_select_region(GTK_EDITABLE(f->entry), 0, -1);
 }
 
 void
 togglebar(Client *c, const Arg *a)
 {
-	if (gtk_widget_get_visible(c->bar)) {
-		gtk_widget_hide(c->bar);
+	if (gtk_widget_get_visible(c->f->bar)) {
+		gtk_widget_hide(c->f->bar);
 		gtk_widget_grab_focus(GTK_WIDGET(c->view));
 	} else {
 		showaddress(c, a);
@@ -1791,8 +2013,6 @@ flashzoom(Client *c)
 {
 	char msg[32];
 
-	if (!c->status)
-		return;
 	if (c->zoomflash)
 		g_source_remove(c->zoomflash);
 	g_snprintf(msg, sizeof(msg), "zoom %.0f%%",
@@ -1839,8 +2059,10 @@ scrollzoom(GtkWidget *w, GdkEvent *e, Client *c)
 }
 
 void
-reloadstop(GtkButton *b, Client *c)
+reloadstop(GtkButton *b, Frame *f)
 {
+	Client *c = f->active;
+
 	if (c->loading)
 		webkit_web_view_stop_loading(c->view);
 	else
@@ -1852,51 +2074,79 @@ void
 setloading(Client *c, int loading)
 {
 	c->loading = loading;
-	if (!c->reload)
+	if (c->f->active != c)
 		return;
-	gtk_button_set_image(GTK_BUTTON(c->reload), gtk_image_new_from_icon_name(
+	gtk_button_set_image(GTK_BUTTON(c->f->reload), gtk_image_new_from_icon_name(
 	    loading ? "process-stop-symbolic" : "view-refresh-symbolic",
 	    GTK_ICON_SIZE_BUTTON));
-	gtk_widget_set_tooltip_text(c->reload,
+	gtk_widget_set_tooltip_text(c->f->reload,
 	    loading ? "Stop (Esc)" : "Reload (Ctrl-r)");
 }
 
 /* One word about what the address stands for, next to it. States: verified
  * (served from the re-verified store), busy (resolving / recovering), error
- * (refused, unresolved, failed), plain (local file). Empty hides it. */
+ * (refused, unresolved, failed), plain (local file). Empty hides it. The
+ * tab keeps it so a switch can repaint it. */
 void
 setbadge(Client *c, const char *state, const char *text, const char *tip)
+{
+	g_free(c->bstate);
+	g_free(c->btext);
+	g_free(c->btip);
+	c->bstate = g_strdup(state ? state : "");
+	c->btext = g_strdup(text ? text : "");
+	c->btip = g_strdup(tip ? tip : "");
+	paintbadge(c);
+}
+
+void
+paintbadge(Client *c)
 {
 	GtkStyleContext *sc;
 	const char *states[] = { "verified", "busy", "error", "plain" };
 	guint i;
 
-	if (!c->badge)
+	if (c->f->active != c)
 		return;
-	sc = gtk_widget_get_style_context(c->badge);
+	sc = gtk_widget_get_style_context(c->f->badge);
 	for (i = 0; i < LENGTH(states); i++)
 		gtk_style_context_remove_class(sc, states[i]);
-	if (!text || !*text) {
-		gtk_widget_hide(c->badge);
+	if (!c->btext || !*c->btext) {
+		gtk_widget_hide(c->f->badge);
 		return;
 	}
-	gtk_style_context_add_class(sc, state);
-	gtk_label_set_text(GTK_LABEL(c->badge), text);
-	gtk_widget_set_tooltip_text(c->badge, tip);
-	gtk_widget_show(c->badge);
+	gtk_style_context_add_class(sc, c->bstate);
+	gtk_label_set_text(GTK_LABEL(c->f->badge), c->btext);
+	gtk_widget_set_tooltip_text(c->f->badge, *c->btip ? c->btip : NULL);
+	gtk_widget_show(c->f->badge);
 }
 
 void
-brandclicked(GtkButton *b, Client *c)
+setspinning(Client *c, int on)
 {
-	urmadetails(c, NULL);
+	c->spinning = on;
+	if (c->f->active != c)
+		return;
+	if (on) {
+		gtk_widget_show(c->f->spin);
+		gtk_spinner_start(GTK_SPINNER(c->f->spin));
+	} else {
+		gtk_spinner_stop(GTK_SPINNER(c->f->spin));
+		gtk_widget_hide(c->f->spin);
+	}
+}
+
+void
+brandclicked(GtkButton *b, Frame *f)
+{
+	urmadetails(f->active, NULL);
 }
 
 /* GTK 3 has no :focus-within; mark the pill while its entry has focus. */
 gboolean
-pillfocus(GtkWidget *w, GdkEventFocus *ev, Client *c)
+pillfocus(GtkWidget *w, GdkEventFocus *ev, Frame *f)
 {
-	GtkStyleContext *sc = gtk_widget_get_style_context(c->pill);
+	GtkStyleContext *sc = gtk_widget_get_style_context(f->pill);
 
 	if (ev->in)
 		gtk_style_context_add_class(sc, "focused");
@@ -1905,139 +2155,149 @@ pillfocus(GtkWidget *w, GdkEventFocus *ev, Client *c)
 	return FALSE;
 }
 
-/* ---- find bar ----------------------------------------------------------- */
+/* ---- find bar (per window, bound to the active tab) ---------------------- */
 
 void
 showfind(Client *c, const Arg *a)
 {
-	gtk_widget_show(c->findbar);
-	gtk_widget_grab_focus(c->findentry);
-	gtk_editable_select_region(GTK_EDITABLE(c->findentry), 0, -1);
-	if (*gtk_entry_get_text(GTK_ENTRY(c->findentry)))
-		findchanged(GTK_EDITABLE(c->findentry), c);
+	Frame *f = c->f;
+
+	gtk_widget_show(f->findbar);
+	gtk_widget_grab_focus(f->findentry);
+	gtk_editable_select_region(GTK_EDITABLE(f->findentry), 0, -1);
+	if (*gtk_entry_get_text(GTK_ENTRY(f->findentry)))
+		findchanged(GTK_EDITABLE(f->findentry), f);
 }
 
 void
-hidefind(Client *c)
+hidefind(Frame *f)
 {
-	if (!c->findbar || !gtk_widget_get_visible(c->findbar))
+	if (!f->findbar || !gtk_widget_get_visible(f->findbar))
 		return;
-	webkit_find_controller_search_finish(c->finder);
-	gtk_label_set_text(GTK_LABEL(c->findcount), "");
-	gtk_widget_hide(c->findbar);
-	gtk_widget_grab_focus(GTK_WIDGET(c->view));
+	if (f->active)
+		webkit_find_controller_search_finish(f->active->finder);
+	gtk_label_set_text(GTK_LABEL(f->findcount), "");
+	gtk_widget_hide(f->findbar);
+	if (f->active)
+		gtk_widget_grab_focus(GTK_WIDGET(f->active->view));
 }
 
 void
-findchanged(GtkEditable *e, Client *c)
+findchanged(GtkEditable *e, Frame *f)
 {
-	const char *s = gtk_entry_get_text(GTK_ENTRY(c->findentry));
+	const char *s = gtk_entry_get_text(GTK_ENTRY(f->findentry));
 
+	if (!f->active)
+		return;
 	if (!*s) {
-		webkit_find_controller_search_finish(c->finder);
-		gtk_label_set_text(GTK_LABEL(c->findcount), "");
+		webkit_find_controller_search_finish(f->active->finder);
+		gtk_label_set_text(GTK_LABEL(f->findcount), "");
 		return;
 	}
-	webkit_find_controller_search(c->finder, s, findopts, G_MAXUINT);
+	webkit_find_controller_search(f->active->finder, s, findopts, G_MAXUINT);
 }
 
 gboolean
-findkey(GtkWidget *w, GdkEventKey *ev, Client *c)
+findkey(GtkWidget *w, GdkEventKey *ev, Frame *f)
 {
 	guint k = gdk_keyval_to_lower(ev->keyval);
 
 	if (ev->keyval == GDK_KEY_Escape) {
-		hidefind(c);
+		hidefind(f);
 		return TRUE;
 	}
 	if (ev->keyval == GDK_KEY_Return || ev->keyval == GDK_KEY_KP_Enter) {
 		if (ev->state & GDK_SHIFT_MASK)
-			webkit_find_controller_search_previous(c->finder);
+			webkit_find_controller_search_previous(f->active->finder);
 		else
-			webkit_find_controller_search_next(c->finder);
+			webkit_find_controller_search_next(f->active->finder);
 		return TRUE;
 	}
 	if ((ev->state & GDK_CONTROL_MASK) && k == GDK_KEY_l) {
-		showaddress(c, NULL);
+		showaddress(f->active, NULL);
 		return TRUE;
 	}
 	if ((ev->state & GDK_CONTROL_MASK) && (k == GDK_KEY_f || k == GDK_KEY_g)) {
-		gtk_editable_select_region(GTK_EDITABLE(c->findentry), 0, -1);
+		gtk_editable_select_region(GTK_EDITABLE(f->findentry), 0, -1);
 		return TRUE;
 	}
 	return FALSE;
 }
 
-static void
-findprev(GtkButton *b, Client *c)
+void
+findprev(GtkButton *b, Frame *f)
 {
-	webkit_find_controller_search_previous(c->finder);
-}
-
-static void
-findnext(GtkButton *b, Client *c)
-{
-	webkit_find_controller_search_next(c->finder);
-}
-
-static void
-findclose(GtkButton *b, Client *c)
-{
-	hidefind(c);
+	webkit_find_controller_search_previous(f->active->finder);
 }
 
 void
-foundtext(WebKitFindController *f, guint count, Client *c)
+findnext(GtkButton *b, Frame *f)
+{
+	webkit_find_controller_search_next(f->active->finder);
+}
+
+void
+findclose(GtkButton *b, Frame *f)
+{
+	hidefind(f);
+}
+
+void
+foundtext(WebKitFindController *fc, guint count, Client *c)
 {
 	char msg[48];
 
+	if (c->f->active != c)
+		return;
 	g_snprintf(msg, sizeof(msg), count == 1 ? "%u match" : "%u matches",
 	    count == G_MAXUINT ? 0 : count);
-	gtk_label_set_text(GTK_LABEL(c->findcount), msg);
+	gtk_label_set_text(GTK_LABEL(c->f->findcount), msg);
 }
 
 void
-failedtext(WebKitFindController *f, Client *c)
+failedtext(WebKitFindController *fc, Client *c)
 {
-	gtk_label_set_text(GTK_LABEL(c->findcount), "no matches");
+	if (c->f->active == c)
+		gtk_label_set_text(GTK_LABEL(c->f->findcount), "no matches");
 }
 
 /* ---- settings ----------------------------------------------------------- */
 
 void
-gearclicked(GtkButton *b, Client *c)
+gearclicked(GtkButton *b, Frame *f)
 {
-	showsettings(c, NULL);
+	showsettings(f->active, NULL);
 }
 
 void
 showsettings(Client *c, const Arg *a)
 {
+	Frame *f = c->f;
 	GtkWidget *old;
 
-	if (!c->popover) {
-		c->popover = gtk_popover_new(c->gear);
-		gtk_style_context_add_class(gtk_widget_get_style_context(c->popover),
+	if (!f->popover) {
+		f->popover = gtk_popover_new(f->gear);
+		gtk_style_context_add_class(gtk_widget_get_style_context(f->popover),
 		    "urma-settings");
-		gtk_popover_set_position(GTK_POPOVER(c->popover), GTK_POS_BOTTOM);
+		gtk_popover_set_position(GTK_POPOVER(f->popover), GTK_POS_BOTTOM);
 	}
-	if ((old = gtk_bin_get_child(GTK_BIN(c->popover))))
+	if ((old = gtk_bin_get_child(GTK_BIN(f->popover))))
 		gtk_widget_destroy(old);
-	c->focuscombo = NULL;
-	gtk_container_add(GTK_CONTAINER(c->popover), settingsbody(c));
-	gtk_widget_show_all(gtk_bin_get_child(GTK_BIN(c->popover)));
-	gtk_popover_popup(GTK_POPOVER(c->popover));
-	if (c->focuscombo)
-		gtk_widget_grab_focus(c->focuscombo);
+	f->focuscombo = NULL;
+	gtk_container_add(GTK_CONTAINER(f->popover), settingsbody(f));
+	gtk_widget_show_all(gtk_bin_get_child(GTK_BIN(f->popover)));
+	gtk_popover_popup(GTK_POPOVER(f->popover));
+	if (f->focuscombo)
+		gtk_widget_grab_focus(f->focuscombo);
 }
 
 gboolean
 rebuildsettings(gpointer data)
 {
-	Client *c = data;
+	Frame *f = data;
 
-	if (c->popover && gtk_widget_get_visible(c->popover))
-		showsettings(c, NULL);
+	if (f->popover && gtk_widget_get_visible(f->popover) && f->active)
+		showsettings(f->active, NULL);
 	return G_SOURCE_REMOVE;
 }
 
@@ -2064,32 +2324,35 @@ notelabel(const char *text)
 }
 
 static GtkWidget *
-switchrow(Client *c, const char *text, ParamName p)
+switchrow(Frame *f, const char *text, ParamName p)
 {
 	GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
 	GtkWidget *l = gtk_label_new(text), *s = gtk_switch_new();
 
 	gtk_label_set_xalign(GTK_LABEL(l), 0.0);
-	gtk_switch_set_active(GTK_SWITCH(s), curconfig[p].val.i);
+	gtk_switch_set_active(GTK_SWITCH(s), f->active->config[p].val.i);
 	g_object_set_data(G_OBJECT(s), "param", GINT_TO_POINTER(p));
-	g_signal_connect(G_OBJECT(s), "state-set", G_CALLBACK(switchset), c);
+	g_signal_connect(G_OBJECT(s), "state-set", G_CALLBACK(switchset), f);
 	gtk_box_pack_start(GTK_BOX(row), l, TRUE, TRUE, 0);
 	gtk_box_pack_end(GTK_BOX(row), s, FALSE, FALSE, 0);
 	return row;
 }
 
+/* The switch writes the table of the active tab's page (its per-URI table
+ * or the defaults), the same table a keyboard toggle writes. */
 gboolean
-switchset(GtkSwitch *s, gboolean state, Client *c)
+switchset(GtkSwitch *s, gboolean state, Frame *f)
 {
 	ParamName p = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(s), "param"));
+	Client *c = f->active;
 
-	curconfig[p].val.i = state;
-	setparameter(c, 1, p, &curconfig[p].val);
+	c->config[p].val.i = state;
+	setparameter(c, 1, p, &c->config[p].val);
 	return FALSE;
 }
 
 GtkWidget *
-menuitem(const char *text, const char *accel, GCallback cb, Client *c)
+menuitem(const char *text, const char *accel, GCallback cb, Frame *f)
 {
 	GtkWidget *b = gtk_button_new(), *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
 	GtkWidget *l = gtk_label_new(text), *k = gtk_label_new(accel);
@@ -2101,16 +2364,17 @@ menuitem(const char *text, const char *accel, GCallback cb, Client *c)
 	gtk_box_pack_end(GTK_BOX(row), k, FALSE, FALSE, 0);
 	gtk_container_add(GTK_CONTAINER(b), row);
 	gtk_button_set_relief(GTK_BUTTON(b), GTK_RELIEF_NONE);
-	g_signal_connect_swapped(G_OBJECT(b), "clicked", cb, c);
+	g_signal_connect_swapped(G_OBJECT(b), "clicked", cb, f);
 	return b;
 }
 
-static void itemdetails(Client *c) { urmadetails(c, NULL); }
-static void itemshortcuts(Client *c) { showshortcuts(c, NULL); }
-static void itembar(Client *c) { togglebar(c, NULL); }
+static void itemdetails(Frame *f) { urmadetails(f->active, NULL); }
+static void itemshortcuts(Frame *f) { showshortcuts(f->active, NULL); }
+static void itembar(Frame *f) { togglebar(f->active, NULL); }
+static void itemtab(Frame *f) { opentab(f->active, NULL); }
 
 GtkWidget *
-settingsbody(Client *c)
+settingsbody(Frame *f)
 {
 	GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4), *head, *t;
 	char *ini = g_build_filename(g_get_home_dir(), ".surf", "urma-registries.ini", NULL);
@@ -2122,7 +2386,7 @@ settingsbody(Client *c)
 	gtk_widget_set_size_request(box, 440, -1);
 
 	head = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-	gtk_box_pack_start(GTK_BOX(head), urmabrand_image(c->win, 20), FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(head), urmabrand_image(f->win, 20), FALSE, FALSE, 0);
 	t = gtk_label_new("Settings");
 	gtk_style_context_add_class(gtk_widget_get_style_context(t), "urma-settings-title");
 	gtk_box_pack_start(GTK_BOX(head), t, FALSE, FALSE, 0);
@@ -2132,39 +2396,41 @@ settingsbody(Client *c)
 	gtk_box_pack_start(GTK_BOX(box), notelabel(
 	    "Which registry resolves name addresses (urma://name.net/), per network. "
 	    "Resolution is local, from an index scanned with the urma client; there is no "
-	    "server. The choice is global for every window and saved in the registry file. "
-	    "Publication addresses by TXID never need one."), FALSE, FALSE, 0);
+	    "server. The choice is global for every tab and window and saved in the registry "
+	    "file. Publication addresses by TXID never need one."), FALSE, FALSE, 0);
 	nets = urma_nets(&n);
 	for (i = 0; i < n; i++)
-		gtk_box_pack_start(GTK_BOX(box), registryrow(c, nets[i]), FALSE, FALSE, 2);
+		gtk_box_pack_start(GTK_BOX(box), registryrow(f, nets[i]), FALSE, FALSE, 2);
 	note = g_strdup_printf("Saved in %s", ini);
 	gtk_box_pack_start(GTK_BOX(box), notelabel(note), FALSE, FALSE, 0);
 	g_free(note);
 	g_free(ini);
 
-	gtk_box_pack_start(GTK_BOX(box), sectionlabel("THIS WINDOW"), FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(box), sectionlabel("THIS TAB"), FALSE, FALSE, 0);
 	gtk_box_pack_start(GTK_BOX(box), notelabel(
-	    "Engine switches of this window; not saved. Changing one reloads the page."),
+	    "Engine switches of this tab's page; not saved. Changing one reloads the page."),
 	    FALSE, FALSE, 0);
-	gtk_box_pack_start(GTK_BOX(box), switchrow(c, "JavaScript", JavaScript), FALSE, FALSE, 0);
-	gtk_box_pack_start(GTK_BOX(box), switchrow(c, "Load images", LoadImages), FALSE, FALSE, 0);
-	gtk_box_pack_start(GTK_BOX(box), switchrow(c, "Caret browsing", CaretBrowsing), FALSE, FALSE, 0);
-	gtk_box_pack_start(GTK_BOX(box), switchrow(c, "Smooth scrolling", SmoothScrolling), FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(box), switchrow(f, "JavaScript", JavaScript), FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(box), switchrow(f, "Load images", LoadImages), FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(box), switchrow(f, "Caret browsing", CaretBrowsing), FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(box), switchrow(f, "Smooth scrolling", SmoothScrolling), FALSE, FALSE, 0);
 
 	gtk_box_pack_start(GTK_BOX(box), sectionlabel("MORE"), FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(box), menuitem("New tab", "Ctrl+T",
+	    G_CALLBACK(itemtab), f), FALSE, FALSE, 0);
 	gtk_box_pack_start(GTK_BOX(box), menuitem("Publication details", "Ctrl+Shift+D",
-	    G_CALLBACK(itemdetails), c), FALSE, FALSE, 0);
+	    G_CALLBACK(itemdetails), f), FALSE, FALSE, 0);
 	gtk_box_pack_start(GTK_BOX(box), menuitem("Keyboard shortcuts", "Ctrl+?",
-	    G_CALLBACK(itemshortcuts), c), FALSE, FALSE, 0);
+	    G_CALLBACK(itemshortcuts), f), FALSE, FALSE, 0);
 	gtk_box_pack_start(GTK_BOX(box), menuitem("Hide the address bar", "Ctrl+Shift+B",
-	    G_CALLBACK(itembar), c), FALSE, FALSE, 0);
+	    G_CALLBACK(itembar), f), FALSE, FALSE, 0);
 	return box;
 }
 
 /* One network: its combo of registries (none / known / other) and a status
  * line saying what the active one is and whether it is scanned locally. */
 GtkWidget *
-registryrow(Client *c, const char *net)
+registryrow(Frame *f, const char *net)
 {
 	GtkWidget *col = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
 	GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
@@ -2195,7 +2461,7 @@ registryrow(Client *c, const char *net)
 	gtk_combo_box_set_active_id(GTK_COMBO_BOX(combo), active ? active : "");
 	g_object_set_data_full(G_OBJECT(combo), "net", g_strdup(net), g_free);
 	g_object_set_data_full(G_OBJECT(combo), "previous", g_strdup(active ? active : ""), g_free);
-	g_signal_connect(G_OBJECT(combo), "changed", G_CALLBACK(registrychanged), c);
+	g_signal_connect(G_OBJECT(combo), "changed", G_CALLBACK(registrychanged), f);
 	gtk_widget_set_hexpand(combo, TRUE);
 
 	if (!active)
@@ -2219,8 +2485,8 @@ registryrow(Client *c, const char *net)
 	gtk_widget_set_can_focus(status, FALSE);
 	/* Keyboard users land on the combo of the first network that has a
 	 * registry; the rest is one Tab away. */
-	if (!c->focuscombo && (active || regs->len))
-		c->focuscombo = combo;
+	if (!f->focuscombo && (active || regs->len))
+		f->focuscombo = combo;
 	g_free(text);
 	g_array_free(regs, TRUE);
 
@@ -2232,7 +2498,7 @@ registryrow(Client *c, const char *net)
 }
 
 void
-registrychanged(GtkComboBox *box, Client *c)
+registrychanged(GtkComboBox *box, Frame *f)
 {
 	const char *id = gtk_combo_box_get_active_id(box);
 	const char *net = g_object_get_data(G_OBJECT(box), "net");
@@ -2242,9 +2508,9 @@ registrychanged(GtkComboBox *box, Client *c)
 	if (!id || !net)
 		return;
 	if (!strcmp(id, "+")) {
-		other = otherregistry(c, net);
+		other = otherregistry(f, net);
 		if (other) {
-			applyregistry(c, net, other);
+			applyregistry(f, net, other);
 			g_free(other);
 		} else {
 			gtk_combo_box_set_active_id(box, previous);
@@ -2253,13 +2519,13 @@ registrychanged(GtkComboBox *box, Client *c)
 	}
 	if (!strcmp(id, previous))
 		return;
-	applyregistry(c, net, id);
+	applyregistry(f, net, id);
 }
 
 /* The settings path is itself an explicit user action, so no switch prompt;
  * the consequences stated in the prompt are stated in the panel instead. */
 void
-applyregistry(Client *c, const char *net, const char *genesis)
+applyregistry(Frame *f, const char *net, const char *genesis)
 {
 	char *msg;
 
@@ -2268,31 +2534,32 @@ applyregistry(Client *c, const char *net, const char *genesis)
 	msg = *genesis ? g_strdup_printf("active registry for .%s: %.12s… (%s)", net, genesis,
 	          urma_registry_label(net, genesis))
 	    : g_strdup_printf("no active registry for .%s; name addresses fail, TXID addresses work", net);
-	setstatus(c, msg);
+	setstatus(f->active, msg);
 	g_free(msg);
-	g_idle_add(rebuildsettings, c);
+	g_idle_add(rebuildsettings, f);
 }
 
 /* Contract §9: after a switch a bar keeps the short form only while the
- * active registry still maps the tab's name to the loaded publication. */
+ * active registry still maps the tab's name to the loaded publication. Every
+ * window's bar follows its active tab; other tabs catch up when shown. */
 void
 refreshaddresses(void)
 {
-	Client *k;
+	Frame *f;
 
-	for (k = clients; k; k = k->next)
-		if (k->entry && !gtk_widget_has_focus(k->entry))
-			gtk_entry_set_text(GTK_ENTRY(k->entry), displayuri(k));
+	for (f = frames; f; f = f->next)
+		if (f->active && !gtk_widget_has_focus(f->entry))
+			gtk_entry_set_text(GTK_ENTRY(f->entry), displayuri(f->active));
 }
 
 char *
-otherregistry(Client *c, const char *net)
+otherregistry(Frame *f, const char *net)
 {
 	GtkWidget *d, *area, *entry, *l;
 	char *text = NULL, *host;
 	UrmaAddr ad;
 
-	d = gtk_dialog_new_with_buttons("Other registry", GTK_WINDOW(c->win),
+	d = gtk_dialog_new_with_buttons("Other registry", GTK_WINDOW(f->win),
 	    GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
 	    "_Cancel", GTK_RESPONSE_CANCEL, "_Use", GTK_RESPONSE_ACCEPT, NULL);
 	gtk_style_context_add_class(gtk_widget_get_style_context(d), "urma-details");
@@ -2321,7 +2588,7 @@ otherregistry(Client *c, const char *net)
 		if (urma_parse_host(host, &ad) && ad.kind == URMA_ADDR_PUB)
 			text = g_strdup(ad.txid);
 		else
-			setstatus(c, "not a registry genesis: 64 lowercase hex characters expected");
+			setstatus(f->active, "not a registry genesis: 64 lowercase hex characters expected");
 		g_free(host);
 		g_free(typed);
 	}
@@ -2335,6 +2602,11 @@ void
 showshortcuts(Client *c, const Arg *a)
 {
 	static const char *rows[][2] = {
+		{ "Ctrl+T · Ctrl+W", "New tab · close tab (the last one closes the window)" },
+		{ "Ctrl+Tab · Ctrl+PgDn", "Next tab" },
+		{ "Ctrl+Shift+Tab · Ctrl+PgUp", "Previous tab" },
+		{ "Ctrl+1 … Ctrl+8 · Ctrl+9", "Tab by number · last tab" },
+		{ "Middle click · Ctrl+click", "Open the link in a new tab, behind" },
 		{ "Ctrl+L · F6", "Focus the address, text selected" },
 		{ "Enter · Esc", "In the address: load · revert" },
 		{ "Alt+← · Ctrl+[ · Ctrl+H", "Back" },
@@ -2355,16 +2627,14 @@ showshortcuts(Client *c, const Arg *a)
 		{ "Ctrl+Shift+B", "Show or hide the address bar" },
 		{ "F11", "Fullscreen" },
 		{ "Ctrl+Shift+P", "Print" },
-		{ "Ctrl+T", "Certificate of the page (TLS only)" },
 		{ "Ctrl+Shift+O", "Web inspector, when enabled" },
 		{ "Ctrl+J · K · Space · B", "Scroll down · up · page down · page up" },
 		{ "Ctrl+Shift+S · I · C · M · T · A", "Toggle JavaScript · images · caret · user style · strict TLS · cookie policy" },
-		{ "Middle click · Ctrl+click", "Open the link in a new window" },
 	};
 	GtkWidget *d, *area, *head, *grid, *k, *v;
 	guint i;
 
-	d = gtk_dialog_new_with_buttons("Keyboard shortcuts", GTK_WINDOW(c->win),
+	d = gtk_dialog_new_with_buttons("Keyboard shortcuts", GTK_WINDOW(c->f->win),
 	    GTK_DIALOG_DESTROY_WITH_PARENT, "_Close", GTK_RESPONSE_CLOSE, NULL);
 	gtk_style_context_add_class(gtk_widget_get_style_context(d), "urma-details");
 	gtk_window_set_resizable(GTK_WINDOW(d), FALSE);
@@ -2393,7 +2663,7 @@ showshortcuts(Client *c, const Arg *a)
 }
 
 /* Recovery of a publication that is not yet in the store runs in a CLI child;
- * every window whose current address is that publication shows it. */
+ * every tab whose current address is that publication shows it. */
 void
 fetchnotify(UrmaFetchEvent ev, const char *net, const char *txid,
             const char *detail, gpointer user)
@@ -2403,7 +2673,7 @@ fetchnotify(UrmaFetchEvent ev, const char *net, const char *txid,
 	char *msg;
 
 	for (c = clients; c; c = c->next) {
-		if (!c->badge || !urma_parse_uri(geturi(c), &ad, NULL)
+		if (!urma_parse_uri(geturi(c), &ad, NULL)
 		    || ad.kind != URMA_ADDR_PUB || strcmp(ad.txid, txid)
 		    || strcmp(ad.net, net))
 			continue;
@@ -2412,18 +2682,15 @@ fetchnotify(UrmaFetchEvent ev, const char *net, const char *txid,
 			setbadge(c, "busy", "recovering",
 			    "Recovering the publication from the chain (urma web fetch); "
 			    "nothing renders before the whole declared set is verified");
-			gtk_widget_show(c->spin);
-			gtk_spinner_start(GTK_SPINNER(c->spin));
+			setspinning(c, 1);
 			setstatus(c, "recovering publication from the chain…");
 			break;
 		case URMA_FETCH_DONE:
-			gtk_spinner_stop(GTK_SPINNER(c->spin));
-			gtk_widget_hide(c->spin);
+			setspinning(c, 0);
 			setstatus(c, "recovered and verified; rendering");
 			break;
 		case URMA_FETCH_FAILED:
-			gtk_spinner_stop(GTK_SPINNER(c->spin));
-			gtk_widget_hide(c->spin);
+			setspinning(c, 0);
 			msg = g_strdup_printf("recovery failed: %s", detail ? detail : "unknown");
 			setbadge(c, "error", "unavailable", msg);
 			setstatus(c, msg);
@@ -2434,21 +2701,21 @@ fetchnotify(UrmaFetchEvent ev, const char *net, const char *txid,
 }
 
 void
-goback(GtkButton *b, Client *c)
+goback(GtkButton *b, Frame *f)
 {
-	webkit_web_view_go_back(c->view);
-	gtk_widget_grab_focus(GTK_WIDGET(c->view));
+	webkit_web_view_go_back(f->active->view);
+	gtk_widget_grab_focus(GTK_WIDGET(f->active->view));
 }
 
 void
-goforward(GtkButton *b, Client *c)
+goforward(GtkButton *b, Frame *f)
 {
-	webkit_web_view_go_forward(c->view);
-	gtk_widget_grab_focus(GTK_WIDGET(c->view));
+	webkit_web_view_go_forward(f->active->view);
+	gtk_widget_grab_focus(GTK_WIDGET(f->active->view));
 }
 
 GtkWidget *
-navbutton(const char *icon, const char *tip, GCallback cb, Client *c)
+navbutton(const char *icon, const char *tip, GCallback cb, gpointer data)
 {
 	GtkWidget *b = gtk_button_new_from_icon_name(icon, GTK_ICON_SIZE_BUTTON);
 
@@ -2458,7 +2725,7 @@ navbutton(const char *icon, const char *tip, GCallback cb, Client *c)
 	gtk_widget_set_tooltip_text(b, tip);
 	gtk_widget_set_focus_on_click(b, FALSE);
 	gtk_widget_set_sensitive(b, FALSE);
-	g_signal_connect(G_OBJECT(b), "clicked", cb, c);
+	g_signal_connect(G_OBJECT(b), "clicked", cb, data);
 	return b;
 }
 
@@ -2466,25 +2733,41 @@ navbutton(const char *icon, const char *tip, GCallback cb, Client *c)
 void
 syncnav(Client *c)
 {
-	if (!c->back)
+	if (c->f->active != c)
 		return;
-	gtk_widget_set_sensitive(c->back,
+	gtk_widget_set_sensitive(c->f->back,
 	    webkit_web_view_can_go_back(c->view));
-	gtk_widget_set_sensitive(c->forward,
+	gtk_widget_set_sensitive(c->f->forward,
 	    webkit_web_view_can_go_forward(c->view));
 }
 
 void
-buildchrome(Client *c)
+buildchrome(Frame *f)
 {
 	GtkCssProvider *css;
 	/* FACELIFT: the chrome carries the URMA palette on its own (ink,
 	 * paper, lime) so it reads the same under any GTK theme, and the
-	 * embedded families so it needs no font package. Everything stays
-	 * one header row: brand, three nav buttons, the address pill with its
-	 * verification badge. The progress bar and status line float over the
-	 * page and never take layout space. */
+	 * embedded families so it needs no font package. Two rows: the tab
+	 * strip, then brand, three nav buttons, the address pill with its
+	 * verification badge, the gear. The progress bar and status line of a
+	 * tab float over its page and never take layout space. */
 	const char *style =
+	    ".urma-strip { background: #0a0f0c; padding: 6px 8px 0; }"
+	    "button.urma-tab { background: #121a15; border: 1px solid #1f2b25;"
+	    "  border-bottom: none; border-radius: 8px 8px 0 0; padding: 0 2px 0 12px;"
+	    "  margin-right: 3px; min-height: 30px; min-width: 60px; box-shadow: none;"
+	    "  outline: none; }"
+	    "button.urma-tab label { font-family: \"" URMA_FONT_SANS "\", sans-serif;"
+	    "  font-size: 9.5pt; color: #98a49b; }"
+	    "button.urma-tab:hover { background: #1f2b25; }"
+	    "button.urma-tab.active { background: #0f1512; border-color: #2a3a31; }"
+	    "button.urma-tab.active label { color: #ecebe3; }"
+	    "button.urma-tabclose { min-width: 18px; min-height: 18px; padding: 0;"
+	    "  margin: 0 2px 0 6px; border-radius: 4px; color: #98a49b; }"
+	    "button.urma-tabclose:hover { background: #8a2f2f; color: #ecebe3; }"
+	    "button.urma-tabadd { min-width: 28px; min-height: 28px; margin: 0 0 2px 2px;"
+	    "  border-radius: 6px; color: #98a49b; }"
+	    "button.urma-tabadd:hover { background: #1f2b25; color: #ecebe3; }"
 	    ".urma-bar { background: #0f1512; padding: 6px 8px;"
 	    "  border-bottom: 1px solid #1f2b25; }"
 	    "button.urma-brand { font-family: \"" URMA_FONT_SANS "\", sans-serif;"
@@ -2492,11 +2775,13 @@ buildchrome(Client *c)
 	    "  color: #d6fa52; padding: 0 8px; margin-right: 6px; min-height: 28px;"
 	    "  background: none; border: none; box-shadow: none; outline: none; }"
 	    "button.urma-brand:hover { background: #1f2b25; border-radius: 6px; }"
+	    "button.urma-brand label { color: #d6fa52; }"
 	    "button.urma-nav { min-width: 28px; min-height: 28px; padding: 0 5px;"
 	    "  margin: 0 1px; border: none; border-radius: 6px; box-shadow: none;"
 	    "  background: none; color: #ecebe3; -gtk-icon-shadow: none; }"
 	    "button.urma-nav:hover:not(:disabled) { background: #1f2b25; }"
 	    "button.urma-nav:disabled { color: #5b655e; -gtk-icon-effect: none; }"
+	    "button.urma-gear { margin-left: 6px; }"
 	    "box.urma-pill { background: #17211c; border: 1px solid #1f2b25;"
 	    "  border-radius: 8px; margin-left: 6px; min-height: 30px; }"
 	    "box.urma-pill.focused { border-color: #d6fa52; }"
@@ -2541,21 +2826,15 @@ buildchrome(Client *c)
 	    "  background: #0f1512; color: #ecebe3; border: none; border-radius: 6px;"
 	    "  padding: 4px 16px; margin: 6px 0 0; box-shadow: none; }"
 	    ".urma-details button:hover { background: #1f2b25; }"
-	    /* Buttons on the sheet keep paper text under any theme; the label
-	     * rule above must not reach them. */
 	    ".urma-details button label { color: #ecebe3; }"
 	    ".urma-details button:disabled { background: #98a49b; }"
 	    ".urma-details button:disabled label { color: #ecebe3; }"
-	    /* A text field on the paper sheet: light well, ink text, lime focus. */
 	    "entry.urma-field { font-family: \"" URMA_FONT_MONO "\", monospace;"
 	    "  font-size: 10pt; color: #0f1512; caret-color: #0f1512;"
 	    "  background: #ffffff; border: 1px solid #98a49b; border-radius: 6px;"
 	    "  padding: 4px 10px; min-height: 28px; box-shadow: none; }"
 	    "entry.urma-field:focus { border-color: #9db83a; }"
 	    "entry.urma-field selection { background: #d6fa52; color: #0f1512; }"
-	    /* Brand button holds an image and a label now. */
-	    "button.urma-brand label { color: #d6fa52; }"
-	    "button.urma-gear { margin-left: 6px; }"
 	    /* Find bar, floating under the progress line at the right. */
 	    "box.urma-find { background: #0f1512; border: 1px solid #1f2b25;"
 	    "  border-top: none; border-radius: 0 0 8px 8px; padding: 5px 6px;"
@@ -2594,6 +2873,7 @@ buildchrome(Client *c)
 	    "  font-size: 9pt; color: #5b655e; }"
 	    "label.urma-key { font-family: \"" URMA_FONT_MONO "\", monospace;"
 	    "  font-size: 9.5pt; color: #0f1512; }";
+	GtkWidget *prev, *next, *close, *hb;
 
 	css = gtk_css_provider_new();
 	gtk_css_provider_load_from_data(css, style, -1, NULL);
@@ -2601,166 +2881,153 @@ buildchrome(Client *c)
 	    GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 	g_object_unref(css);
 
-	c->box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+	f->box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+
+	/* Tab strip: the tabs, then a "+" at their right. */
+	f->tabs = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+	f->tabadd = navbutton("list-add-symbolic", "New tab (Ctrl-t)",
+	    G_CALLBACK(tabaddclicked), f);
+	gtk_style_context_add_class(gtk_widget_get_style_context(f->tabadd),
+	    "urma-tabadd");
+	gtk_widget_set_sensitive(f->tabadd, TRUE);
+	gtk_widget_set_valign(f->tabadd, GTK_ALIGN_END);
+	f->strip = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+	gtk_style_context_add_class(gtk_widget_get_style_context(f->strip),
+	    "urma-strip");
+	gtk_box_pack_start(GTK_BOX(f->strip), f->tabs, FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(f->strip), f->tabadd, FALSE, FALSE, 0);
 
 	/* Brand: the original mark (embedded raster, HiDPI-aware) and the
 	 * wordmark; doubles as the way into the publication details. */
-	{
-		GtkWidget *hb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 7);
-		gtk_box_pack_start(GTK_BOX(hb), urmabrand_image(c->win, 22), FALSE, FALSE, 0);
-		gtk_box_pack_start(GTK_BOX(hb), gtk_label_new("URMA"), FALSE, FALSE, 0);
-		c->brand = gtk_button_new();
-		gtk_container_add(GTK_CONTAINER(c->brand), hb);
-	}
-	gtk_style_context_add_class(gtk_widget_get_style_context(c->brand),
+	hb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 7);
+	gtk_box_pack_start(GTK_BOX(hb), urmabrand_image(f->win, 22), FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(hb), gtk_label_new("URMA"), FALSE, FALSE, 0);
+	f->brand = gtk_button_new();
+	gtk_container_add(GTK_CONTAINER(f->brand), hb);
+	gtk_style_context_add_class(gtk_widget_get_style_context(f->brand),
 	    "urma-brand");
-	gtk_button_set_relief(GTK_BUTTON(c->brand), GTK_RELIEF_NONE);
-	gtk_widget_set_focus_on_click(c->brand, FALSE);
-	gtk_widget_set_tooltip_text(c->brand,
+	gtk_button_set_relief(GTK_BUTTON(f->brand), GTK_RELIEF_NONE);
+	gtk_widget_set_focus_on_click(f->brand, FALSE);
+	gtk_widget_set_tooltip_text(f->brand,
 	    "Publication details (Ctrl-Shift-D)");
-	g_signal_connect(G_OBJECT(c->brand), "clicked",
-	                 G_CALLBACK(brandclicked), c);
+	g_signal_connect(G_OBJECT(f->brand), "clicked",
+	                 G_CALLBACK(brandclicked), f);
 
-	/* Back/forward, bound to the real WebKit history below. */
-	c->back = navbutton("go-previous-symbolic", "Back (Ctrl-h)",
-	    G_CALLBACK(goback), c);
-	c->forward = navbutton("go-next-symbolic", "Forward (Ctrl-l)",
-	    G_CALLBACK(goforward), c);
-	/* One button that reloads, and stops while a load is running: the
-	 * state is already known, so it costs nothing to show it. */
-	c->reload = navbutton("view-refresh-symbolic", "Reload (Ctrl-r)",
-	    G_CALLBACK(reloadstop), c);
-	gtk_widget_set_sensitive(c->reload, TRUE);
+	/* Back/forward, bound to the active tab's real WebKit history. */
+	f->back = navbutton("go-previous-symbolic", "Back (Alt-Left)",
+	    G_CALLBACK(goback), f);
+	f->forward = navbutton("go-next-symbolic", "Forward (Alt-Right)",
+	    G_CALLBACK(goforward), f);
+	/* One button that reloads, and stops while a load is running. */
+	f->reload = navbutton("view-refresh-symbolic", "Reload (Ctrl-r)",
+	    G_CALLBACK(reloadstop), f);
+	gtk_widget_set_sensitive(f->reload, TRUE);
 
-	c->entry = gtk_entry_new();
-	gtk_style_context_add_class(gtk_widget_get_style_context(c->entry),
+	f->entry = gtk_entry_new();
+	gtk_style_context_add_class(gtk_widget_get_style_context(f->entry),
 	    "urma-address");
-	gtk_entry_set_has_frame(GTK_ENTRY(c->entry), FALSE);
-	gtk_entry_set_placeholder_text(GTK_ENTRY(c->entry),
+	gtk_entry_set_has_frame(GTK_ENTRY(f->entry), FALSE);
+	gtk_entry_set_placeholder_text(GTK_ENTRY(f->entry),
 	    "urma://name.tltc  or  urma://<root txid>.tltc");
-	g_signal_connect(G_OBJECT(c->entry), "activate",
-	                 G_CALLBACK(entryactivate), c);
-	g_signal_connect(G_OBJECT(c->entry), "key-press-event",
-	                 G_CALLBACK(entrykey), c);
-	g_signal_connect(G_OBJECT(c->entry), "focus-in-event",
-	                 G_CALLBACK(pillfocus), c);
-	g_signal_connect(G_OBJECT(c->entry), "focus-out-event",
-	                 G_CALLBACK(pillfocus), c);
+	g_signal_connect(G_OBJECT(f->entry), "activate",
+	                 G_CALLBACK(entryactivate), f);
+	g_signal_connect(G_OBJECT(f->entry), "key-press-event",
+	                 G_CALLBACK(entrykey), f);
+	g_signal_connect(G_OBJECT(f->entry), "focus-in-event",
+	                 G_CALLBACK(pillfocus), f);
+	g_signal_connect(G_OBJECT(f->entry), "focus-out-event",
+	                 G_CALLBACK(pillfocus), f);
 
-	c->spin = gtk_spinner_new();
-	gtk_style_context_add_class(gtk_widget_get_style_context(c->spin),
+	f->spin = gtk_spinner_new();
+	gtk_style_context_add_class(gtk_widget_get_style_context(f->spin),
 	    "urma-spin");
-	gtk_widget_set_no_show_all(c->spin, TRUE);
+	gtk_widget_set_no_show_all(f->spin, TRUE);
 
-	c->badge = gtk_label_new(NULL);
-	gtk_style_context_add_class(gtk_widget_get_style_context(c->badge),
+	f->badge = gtk_label_new(NULL);
+	gtk_style_context_add_class(gtk_widget_get_style_context(f->badge),
 	    "urma-badge");
-	gtk_widget_set_valign(c->badge, GTK_ALIGN_CENTER);
-	gtk_widget_set_no_show_all(c->badge, TRUE);
+	gtk_widget_set_valign(f->badge, GTK_ALIGN_CENTER);
+	gtk_widget_set_no_show_all(f->badge, TRUE);
 
-	c->pill = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-	gtk_style_context_add_class(gtk_widget_get_style_context(c->pill),
+	f->pill = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+	gtk_style_context_add_class(gtk_widget_get_style_context(f->pill),
 	    "urma-pill");
-	gtk_box_pack_start(GTK_BOX(c->pill), c->spin, FALSE, FALSE, 0);
-	gtk_box_pack_start(GTK_BOX(c->pill), c->entry, TRUE, TRUE, 0);
-	gtk_box_pack_end(GTK_BOX(c->pill), c->badge, FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(f->pill), f->spin, FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(f->pill), f->entry, TRUE, TRUE, 0);
+	gtk_box_pack_end(GTK_BOX(f->pill), f->badge, FALSE, FALSE, 0);
 
 	/* Settings: one gear, a popover built fresh on every opening. */
-	c->gear = navbutton("emblem-system-symbolic", "Settings (Ctrl-,)",
-	    G_CALLBACK(gearclicked), c);
-	gtk_style_context_add_class(gtk_widget_get_style_context(c->gear),
+	f->gear = navbutton("emblem-system-symbolic", "Settings (Ctrl-,)",
+	    G_CALLBACK(gearclicked), f);
+	gtk_style_context_add_class(gtk_widget_get_style_context(f->gear),
 	    "urma-gear");
-	gtk_widget_set_sensitive(c->gear, TRUE);
+	gtk_widget_set_sensitive(f->gear, TRUE);
 
-	c->bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-	gtk_style_context_add_class(gtk_widget_get_style_context(c->bar),
+	f->bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+	gtk_style_context_add_class(gtk_widget_get_style_context(f->bar),
 	    "urma-bar");
-	gtk_box_pack_start(GTK_BOX(c->bar), c->brand, FALSE, FALSE, 0);
-	gtk_box_pack_start(GTK_BOX(c->bar), c->back, FALSE, FALSE, 0);
-	gtk_box_pack_start(GTK_BOX(c->bar), c->forward, FALSE, FALSE, 0);
-	gtk_box_pack_start(GTK_BOX(c->bar), c->reload, FALSE, FALSE, 0);
-	gtk_box_pack_start(GTK_BOX(c->bar), c->pill, TRUE, TRUE, 0);
-	gtk_box_pack_end(GTK_BOX(c->bar), c->gear, FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(f->bar), f->brand, FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(f->bar), f->back, FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(f->bar), f->forward, FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(f->bar), f->reload, FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(f->bar), f->pill, TRUE, TRUE, 0);
+	gtk_box_pack_end(GTK_BOX(f->bar), f->gear, FALSE, FALSE, 0);
 
-	/* Find bar: floats at the top-right of the page, zero layout cost. */
+	/* Find bar: floats at the top-right of the pages, zero layout cost. */
+	f->findentry = gtk_entry_new();
+	gtk_entry_set_has_frame(GTK_ENTRY(f->findentry), FALSE);
+	gtk_entry_set_placeholder_text(GTK_ENTRY(f->findentry), "Find in page");
+	g_signal_connect(G_OBJECT(f->findentry), "changed",
+	                 G_CALLBACK(findchanged), f);
+	g_signal_connect(G_OBJECT(f->findentry), "key-press-event",
+	                 G_CALLBACK(findkey), f);
+	f->findcount = gtk_label_new(NULL);
+	gtk_style_context_add_class(gtk_widget_get_style_context(f->findcount),
+	    "urma-find-count");
+	prev = navbutton("go-up-symbolic", "Previous match (Shift-Enter)",
+	    G_CALLBACK(findprev), f);
+	next = navbutton("go-down-symbolic", "Next match (Enter)",
+	    G_CALLBACK(findnext), f);
+	close = navbutton("window-close-symbolic", "Close (Esc)",
+	    G_CALLBACK(findclose), f);
+	gtk_widget_set_sensitive(prev, TRUE);
+	gtk_widget_set_sensitive(next, TRUE);
+	gtk_widget_set_sensitive(close, TRUE);
+	f->findbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+	gtk_style_context_add_class(gtk_widget_get_style_context(f->findbar),
+	    "urma-find");
+	gtk_box_pack_start(GTK_BOX(f->findbar), f->findentry, FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(f->findbar), f->findcount, FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(f->findbar), prev, FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(f->findbar), next, FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(f->findbar), close, FALSE, FALSE, 0);
+	gtk_widget_set_halign(f->findbar, GTK_ALIGN_END);
+	gtk_widget_set_valign(f->findbar, GTK_ALIGN_START);
+	gtk_widget_set_no_show_all(f->findbar, TRUE);
+	gtk_widget_show_all(f->findentry);
+	gtk_widget_show(f->findcount);
+	gtk_widget_show_all(prev);
+	gtk_widget_show_all(next);
+	gtk_widget_show_all(close);
+
+	/* The pages: one overlay per tab in a stack; the find bar floats over
+	 * whichever is shown. */
+	f->stack = gtk_stack_new();
+	gtk_stack_set_transition_type(GTK_STACK(f->stack), GTK_STACK_TRANSITION_TYPE_NONE);
+	gtk_stack_set_homogeneous(GTK_STACK(f->stack), TRUE);
 	{
-		GtkWidget *prev, *next, *close;
-
-		c->findentry = gtk_entry_new();
-		gtk_entry_set_has_frame(GTK_ENTRY(c->findentry), FALSE);
-		gtk_entry_set_placeholder_text(GTK_ENTRY(c->findentry), "Find in page");
-		g_signal_connect(G_OBJECT(c->findentry), "changed",
-		                 G_CALLBACK(findchanged), c);
-		g_signal_connect(G_OBJECT(c->findentry), "key-press-event",
-		                 G_CALLBACK(findkey), c);
-		c->findcount = gtk_label_new(NULL);
-		gtk_style_context_add_class(gtk_widget_get_style_context(c->findcount),
-		    "urma-find-count");
-		prev = navbutton("go-up-symbolic", "Previous match (Shift-Enter)",
-		    G_CALLBACK(findprev), c);
-		next = navbutton("go-down-symbolic", "Next match (Enter)",
-		    G_CALLBACK(findnext), c);
-		close = navbutton("window-close-symbolic", "Close (Esc)",
-		    G_CALLBACK(findclose), c);
-		gtk_widget_set_sensitive(prev, TRUE);
-		gtk_widget_set_sensitive(next, TRUE);
-		gtk_widget_set_sensitive(close, TRUE);
-
-		c->findbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
-		gtk_style_context_add_class(gtk_widget_get_style_context(c->findbar),
-		    "urma-find");
-		gtk_box_pack_start(GTK_BOX(c->findbar), c->findentry, FALSE, FALSE, 0);
-		gtk_box_pack_start(GTK_BOX(c->findbar), c->findcount, FALSE, FALSE, 0);
-		gtk_box_pack_start(GTK_BOX(c->findbar), prev, FALSE, FALSE, 0);
-		gtk_box_pack_start(GTK_BOX(c->findbar), next, FALSE, FALSE, 0);
-		gtk_box_pack_start(GTK_BOX(c->findbar), close, FALSE, FALSE, 0);
-		gtk_widget_set_halign(c->findbar, GTK_ALIGN_END);
-		gtk_widget_set_valign(c->findbar, GTK_ALIGN_START);
-		gtk_widget_set_no_show_all(c->findbar, TRUE);
-		gtk_widget_show_all(c->findentry);
-		gtk_widget_show(c->findcount);
-		gtk_widget_show_all(prev);
-		gtk_widget_show_all(next);
-		gtk_widget_show_all(close);
-		g_signal_connect(G_OBJECT(c->finder), "found-text",
-		                 G_CALLBACK(foundtext), c);
-		g_signal_connect(G_OBJECT(c->finder), "failed-to-find-text",
-		                 G_CALLBACK(failedtext), c);
+		GtkWidget *pages = gtk_overlay_new();
+		gtk_container_add(GTK_CONTAINER(pages), f->stack);
+		gtk_overlay_add_overlay(GTK_OVERLAY(pages), f->findbar);
+		gtk_box_pack_start(GTK_BOX(f->box), f->strip, FALSE, FALSE, 0);
+		gtk_box_pack_start(GTK_BOX(f->box), f->bar, FALSE, FALSE, 0);
+		gtk_box_pack_start(GTK_BOX(f->box), pages, TRUE, TRUE, 0);
 	}
-
-	c->load = gtk_progress_bar_new();
-	gtk_style_context_add_class(gtk_widget_get_style_context(c->load),
-	    "urma-load");
-	gtk_widget_set_valign(c->load, GTK_ALIGN_START);
-	gtk_widget_set_no_show_all(c->load, TRUE);
-
-	c->status = gtk_label_new(NULL);
-	gtk_style_context_add_class(gtk_widget_get_style_context(c->status),
-	    "urma-status");
-	gtk_label_set_xalign(GTK_LABEL(c->status), 0.0);
-	gtk_label_set_ellipsize(GTK_LABEL(c->status), PANGO_ELLIPSIZE_MIDDLE);
-	/* FIX (urma-surf): the status label used to be packed into the box, so
-	 * showing it on hover resized the web view and relaid out the whole
-	 * page — the "jumps from top to bottom, flickers" glitch. As an
-	 * overlay child it floats above the view and costs zero layout. */
-	gtk_widget_set_halign(c->status, GTK_ALIGN_START);
-	gtk_widget_set_valign(c->status, GTK_ALIGN_END);
-	gtk_widget_set_no_show_all(c->status, TRUE);
-
-	c->overlay = gtk_overlay_new();
-	gtk_container_add(GTK_CONTAINER(c->overlay), GTK_WIDGET(c->view));
-	gtk_overlay_add_overlay(GTK_OVERLAY(c->overlay), c->status);
-	gtk_overlay_add_overlay(GTK_OVERLAY(c->overlay), c->findbar);
-	gtk_overlay_add_overlay(GTK_OVERLAY(c->overlay), c->load);
-
-	gtk_box_pack_start(GTK_BOX(c->box), c->bar, FALSE, FALSE, 0);
-	gtk_box_pack_start(GTK_BOX(c->box), c->overlay, TRUE, TRUE, 0);
 }
 
 GtkWidget *
-createwindow(Client *c)
+createwindow(Frame *f)
 {
-	char *wmstr;
 	GtkWidget *w;
 
 	if (embed) {
@@ -2770,10 +3037,7 @@ createwindow(Client *c)
 
 		/* WM_CLASS comes from g_set_prgname / gdk_set_program_class in
 		 * setup(); the per-window setter is deprecated. */
-		wmstr = g_strdup_printf("%s[%"PRIu64"]", "Surf", c->pageid);
-		gtk_window_set_role(GTK_WINDOW(w), wmstr);
-		g_free(wmstr);
-
+		gtk_window_set_role(GTK_WINDOW(w), "Surf");
 		gtk_window_set_default_size(GTK_WINDOW(w), winsize[0], winsize[1]);
 		/* FACELIFT: the URMA mark as window icon, every embedded size. */
 		{
@@ -2784,15 +3048,15 @@ createwindow(Client *c)
 	}
 
 	g_signal_connect(G_OBJECT(w), "destroy",
-	                 G_CALLBACK(destroywin), c);
+	                 G_CALLBACK(destroywin), f);
 	g_signal_connect(G_OBJECT(w), "enter-notify-event",
-	                 G_CALLBACK(winevent), c);
+	                 G_CALLBACK(winevent), f);
 	g_signal_connect(G_OBJECT(w), "key-press-event",
-	                 G_CALLBACK(winevent), c);
+	                 G_CALLBACK(winevent), f);
 	g_signal_connect(G_OBJECT(w), "leave-notify-event",
-	                 G_CALLBACK(winevent), c);
+	                 G_CALLBACK(winevent), f);
 	g_signal_connect(G_OBJECT(w), "window-state-event",
-	                 G_CALLBACK(winevent), c);
+	                 G_CALLBACK(winevent), f);
 
 	return w;
 }
@@ -2852,6 +3116,7 @@ void
 loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c)
 {
 	const char *uri = geturi(c);
+	Frame *f = c->f;
 
 	switch (e) {
 	case WEBKIT_LOAD_STARTED:
@@ -2889,8 +3154,8 @@ loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c)
 			        || strcmp(ad.net, c->urmanet)))
 				urmaclearctx(c);
 		}
-		if (c->entry && !gtk_widget_has_focus(c->entry))
-			gtk_entry_set_text(GTK_ENTRY(c->entry), displayuri(c));
+		if (f->active == c && !gtk_widget_has_focus(f->entry))
+			gtk_entry_set_text(GTK_ENTRY(f->entry), displayuri(c));
 		/* FACELIFT: say what the committed document is. A publication
 		 * document can only have come from the re-verified store, whose
 		 * cached manifest describes it; everything else is named plainly. */
@@ -2912,16 +3177,11 @@ loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c)
 		seturiparameters(c, uri, loadfinished);
 		/* MODERNISE: keep the address in sync with where we actually
 		 * are, unless the user is mid-edit. */
-		if (c->entry && !gtk_widget_has_focus(c->entry))
-			gtk_entry_set_text(GTK_ENTRY(c->entry), displayuri(c));
+		if (f->active == c && !gtk_widget_has_focus(f->entry))
+			gtk_entry_set_text(GTK_ENTRY(f->entry), displayuri(c));
 		setstatus(c, NULL);
 		setloading(c, 0);
 		syncnav(c);
-		/* Disabled until we write some WebKitWebExtension for
-		 * manipulating the DOM directly.
-		evalscript(c, "document.documentElement.style.overflow = '%s'",
-		    enablescrollbars ? "auto" : "hidden");
-		*/
 		runscript(c);
 		break;
 	}
@@ -2935,14 +3195,12 @@ progresschanged(WebKitWebView *v, GParamSpec *ps, Client *c)
 	              100;
 	/* MODERNISE: the thin bar only exists while something is loading, so
 	 * progress is visible without reading the window title. */
-	if (c->load) {
-		gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(c->load),
-		    c->progress / 100.0);
-		if (c->progress < 100)
-			gtk_widget_show(c->load);
-		else
-			gtk_widget_hide(c->load);
-	}
+	gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(c->load),
+	    c->progress / 100.0);
+	if (c->progress < 100)
+		gtk_widget_show(c->load);
+	else
+		gtk_widget_hide(c->load);
 	updatetitle(c);
 }
 
@@ -3052,14 +3310,10 @@ loadfailed(WebKitWebView *v, WebKitLoadEvent e, gchar *uri, GError *err,
 	webkit_web_view_load_alternate_html(v, html, uri, NULL);
 	setstatus(c, NULL);
 	setbadge(c, "error", "unavailable", err && err->message ? err->message : NULL);
-	if (c->spin) {
-		gtk_spinner_stop(GTK_SPINNER(c->spin));
-		gtk_widget_hide(c->spin);
-	}
+	setspinning(c, 0);
 	setloading(c, 0);
 	syncnav(c);
-	if (c->load)
-		gtk_widget_hide(c->load);
+	gtk_widget_hide(c->load);
 
 	g_free(html);
 	g_free(euri);
@@ -3085,7 +3339,7 @@ permissionrequested(WebKitWebView *v, WebKitPermissionRequest *r, Client *c)
 		return FALSE;
 	}
 
-	if (curconfig[param].val.i)
+	if (c->config[param].val.i)
 		webkit_permission_request_allow(r);
 	else
 		webkit_permission_request_deny(r);
@@ -3139,35 +3393,21 @@ decidenavigation(WebKitPolicyDecision *d, Client *c)
 		return;
 	}
 
-	switch (webkit_navigation_action_get_navigation_type(a)) {
-	case WEBKIT_NAVIGATION_TYPE_LINK_CLICKED: /* fallthrough */
-	case WEBKIT_NAVIGATION_TYPE_FORM_SUBMITTED: /* fallthrough */
-	case WEBKIT_NAVIGATION_TYPE_BACK_FORWARD: /* fallthrough */
-	case WEBKIT_NAVIGATION_TYPE_RELOAD: /* fallthrough */
-	case WEBKIT_NAVIGATION_TYPE_FORM_RESUBMITTED: /* fallthrough */
-	case WEBKIT_NAVIGATION_TYPE_OTHER: /* fallthrough */
-	default:
-		/* Do not navigate to links with a "_blank" target (popup) */
-		if (webkit_navigation_action_get_frame_name(a)) {
-			webkit_policy_decision_ignore(d);
-		} else {
-			/* Filter out navigation to different domain ? */
-			/* get action→urirequest, copy and load in new window+view
-			 * on Ctrl+Click ? */
-			webkit_policy_decision_use(d);
-		}
-		break;
+	/* A link with a "_blank" target opens a tab instead of a popup. */
+	if (webkit_navigation_action_get_frame_name(a)) {
+		webkit_policy_decision_ignore(d);
+		newtab(c->f, NULL, uri, 1);
+		return;
 	}
+	webkit_policy_decision_use(d);
 }
 
 void
 decidenewwindow(WebKitPolicyDecision *d, Client *c)
 {
-	Arg arg;
 	WebKitNavigationAction *a =
 	    webkit_navigation_policy_decision_get_navigation_action(
 	    WEBKIT_NAVIGATION_POLICY_DECISION(d));
-
 
 	switch (webkit_navigation_action_get_navigation_type(a)) {
 	case WEBKIT_NAVIGATION_TYPE_LINK_CLICKED: /* fallthrough */
@@ -3175,12 +3415,8 @@ decidenewwindow(WebKitPolicyDecision *d, Client *c)
 	case WEBKIT_NAVIGATION_TYPE_BACK_FORWARD: /* fallthrough */
 	case WEBKIT_NAVIGATION_TYPE_RELOAD: /* fallthrough */
 	case WEBKIT_NAVIGATION_TYPE_FORM_RESUBMITTED:
-		/* Filter domains here */
-/* If the value of “mouse-button” is not 0, then the navigation was triggered by a mouse event.
- * test for link clicked but no button ? */
-		arg.v = webkit_uri_request_get_uri(
-		        webkit_navigation_action_get_request(a));
-		newwindow(c, &arg, 0);
+		newtab(c->f, NULL, webkit_uri_request_get_uri(
+		    webkit_navigation_action_get_request(a)), 1);
 		break;
 	case WEBKIT_NAVIGATION_TYPE_OTHER: /* fallthrough */
 	default:
@@ -3213,7 +3449,7 @@ decideresource(WebKitPolicyDecision *d, Client *c)
 	    && !g_str_has_prefix(uri, "urma:")
 	    && !g_str_has_prefix(uri, "data:")
 	    && !g_str_has_prefix(uri, "blob:")
-	    && !(g_str_has_prefix(uri, "webkit-pdfjs-viewer://") && curconfig[PDFJSviewer].val.i)
+	    && !(g_str_has_prefix(uri, "webkit-pdfjs-viewer://") && c->config[PDFJSviewer].val.i)
 	    && strlen(uri) > 0) {
 		for (i = 0; i < strlen(uri); i++) {
 			if (!g_ascii_isprint(uri[i])) {
@@ -3233,7 +3469,7 @@ decideresource(WebKitPolicyDecision *d, Client *c)
 	} else if (urma_is_uri(uri)) {
 		char *msg;
 		webkit_policy_decision_ignore(d);
-		msg = urma_save(uri, GTK_WINDOW(c->win));
+		msg = urma_save(uri, GTK_WINDOW(c->f->win));
 		setstatus(c, msg);
 		g_free(msg);
 	} else {
@@ -3248,15 +3484,25 @@ insecurecontent(WebKitWebView *v, WebKitInsecureContentEvent e, Client *c)
 	c->insecure = 1;
 }
 
+/* The context is shared, so the download names its view; the tab of that
+ * view owns the dialog and the status line. */
 void
-downloadstarted(WebKitWebContext *wc, WebKitDownload *d, Client *c)
+downloadstarted(WebKitWebContext *wc, WebKitDownload *d, gpointer unused)
 {
+	WebKitURIRequest *req = webkit_download_get_request(d);
+	Client *c = clientofview(webkit_download_get_web_view(d));
+
+	if (!c)
+		c = frames && frames->active ? frames->active : clients;
+	if (!c) {
+		webkit_download_cancel(d);
+		return;
+	}
 	/* URMA: declared resources are served by the handler from the verified
 	 * store; WebKit downloads them itself and the user picks the destination.
 	 * The curl path stays for everything else. */
-	WebKitURIRequest *req = webkit_download_get_request(d);
 	if (req && urma_is_uri(webkit_uri_request_get_uri(req))) {
-		char *msg = urma_save(webkit_uri_request_get_uri(req), GTK_WINDOW(c->win));
+		char *msg = urma_save(webkit_uri_request_get_uri(req), GTK_WINDOW(c->f->win));
 		webkit_download_cancel(d);
 		setstatus(c, msg);
 		g_free(msg);
@@ -3286,20 +3532,21 @@ webprocessterminated(WebKitWebView *v, WebKitWebProcessTerminationReason r,
 {
 	fprintf(stderr, "web process terminated: %s\n",
 	        r == WEBKIT_WEB_PROCESS_CRASHED ? "crashed" : "no memory");
-	closeview(v, c);
+	closetab(c);
 }
 
+/* window.close() closes the tab, not the window. */
 void
 closeview(WebKitWebView *v, Client *c)
 {
-	gtk_widget_destroy(c->win);
+	closetab(c);
 }
 
 void
-destroywin(GtkWidget* w, Client *c)
+destroywin(GtkWidget* w, Frame *f)
 {
-	destroyclient(c);
-	if (!clients)
+	destroyframe(f);
+	if (!frames)
 		gtk_main_quit();
 }
 
@@ -3324,7 +3571,7 @@ void
 print(Client *c, const Arg *a)
 {
 	webkit_print_operation_run_dialog(webkit_print_operation_new(c->view),
-	                                  GTK_WINDOW(c->win));
+	                                  GTK_WINDOW(c->f->win));
 }
 
 void
@@ -3370,7 +3617,8 @@ zoom(Client *c, const Arg *a)
 {
 	/* Step from the view's actual zoom, not from the stored config value:
 	 * Ctrl+wheel and the keys must not drift apart, and the clamp keeps
-	 * repeated steps from reaching unusable extremes. */
+	 * repeated steps from reaching unusable extremes. The zoom is the
+	 * tab's; the table is not written. */
 	gdouble level = webkit_web_view_get_zoom_level(c->view);
 
 	if (a->i > 0)
@@ -3381,13 +3629,10 @@ zoom(Client *c, const Arg *a)
 		level = 1.0;
 
 	webkit_web_view_set_zoom_level(c->view, level);
-	curconfig[ZoomLevel].val.f = webkit_web_view_get_zoom_level(c->view);
 	flashzoom(c);
 }
 
-/* Keyboard scrolling in viewport percent. Upstream relayed this through a
- * socket to the web extension; the extension API it used is deprecated and
- * the shell can evaluate the same two lines itself. */
+/* Keyboard scrolling in viewport percent, evaluated by the shell. */
 void
 scrollv(Client *c, const Arg *a)
 {
@@ -3413,31 +3658,31 @@ void
 stop(Client *c, const Arg *a)
 {
 	webkit_web_view_stop_loading(c->view);
-	hidefind(c);
+	hidefind(c->f);
 }
 
 void
 toggle(Client *c, const Arg *a)
 {
-	curconfig[a->i].val.i ^= 1;
-	setparameter(c, 1, (ParamName)a->i, &curconfig[a->i].val);
+	c->config[a->i].val.i ^= 1;
+	setparameter(c, 1, (ParamName)a->i, &c->config[a->i].val);
 }
 
 void
 togglefullscreen(Client *c, const Arg *a)
 {
 	/* toggling value is handled in winevent() */
-	if (c->fullscreen)
-		gtk_window_unfullscreen(GTK_WINDOW(c->win));
+	if (c->f->fullscreen)
+		gtk_window_unfullscreen(GTK_WINDOW(c->f->win));
 	else
-		gtk_window_fullscreen(GTK_WINDOW(c->win));
+		gtk_window_fullscreen(GTK_WINDOW(c->f->win));
 }
 
 void
 togglecookiepolicy(Client *c, const Arg *a)
 {
 	++cookiepolicy;
-	cookiepolicy %= strlen(curconfig[CookiePolicies].val.v);
+	cookiepolicy %= strlen(c->config[CookiePolicies].val.v);
 
 	setparameter(c, 0, CookiePolicies, NULL);
 }
@@ -3447,7 +3692,7 @@ toggleinspector(Client *c, const Arg *a)
 {
 	if (webkit_web_inspector_is_attached(c->inspector))
 		webkit_web_inspector_close(c->inspector);
-	else if (curconfig[Inspector].val.i)
+	else if (c->config[Inspector].val.i)
 		webkit_web_inspector_show(c->inspector);
 }
 
@@ -3464,8 +3709,8 @@ find(Client *c, const Arg *a)
 	} else {
 		/* The inline find bar owns the needle; the X property remains
 		 * for scripted use (xprop -set _SURF_FIND). */
-		s = c->findentry && *gtk_entry_get_text(GTK_ENTRY(c->findentry))
-		    ? gtk_entry_get_text(GTK_ENTRY(c->findentry)) : getatom(c, AtomFind);
+		s = *gtk_entry_get_text(GTK_ENTRY(c->f->findentry))
+		    ? gtk_entry_get_text(GTK_ENTRY(c->f->findentry)) : getatom(c, AtomFind);
 		f = webkit_find_controller_get_search_text(c->finder);
 
 		if (g_strcmp0(f, s) == 0) /* reset search */
@@ -3480,19 +3725,57 @@ find(Client *c, const Arg *a)
 	}
 }
 
+/* ---- tab keys ------------------------------------------------------------- */
+
+void
+opentab(Client *c, const Arg *a)
+{
+	Client *n = newtab(c->f, NULL, NULL, 1);
+
+	showaddress(n, NULL);
+}
+
+void
+closetabkey(Client *c, const Arg *a)
+{
+	closetab(c);
+}
+
+void
+cycletab(Client *c, const Arg *a)
+{
+	int n = tabcount(c->f), i = tabindex(c);
+	Client *to;
+
+	if (n < 2)
+		return;
+	to = tabat(c->f, ((i + a->i) % n + n) % n);
+	if (to)
+		activatetab(to);
+}
+
+/* Ctrl-1..8 pick a tab, Ctrl-9 the last one, as in every browser. */
+void
+selecttab(Client *c, const Arg *a)
+{
+	int n = tabcount(c->f);
+	Client *to = tabat(c->f, a->i >= 9 || a->i > n ? n - 1 : a->i - 1);
+
+	if (to)
+		activatetab(to);
+}
+
 void
 clicknavigate(Client *c, const Arg *a, WebKitHitTestResult *h)
 {
 	navigate(c, a);
 }
 
+/* Middle click and Ctrl-click open the link in a tab behind the current one. */
 void
-clicknewwindow(Client *c, const Arg *a, WebKitHitTestResult *h)
+clicknewtab(Client *c, const Arg *a, WebKitHitTestResult *h)
 {
-	Arg arg;
-
-	arg.v = webkit_hit_test_result_get_link_uri(h);
-	newwindow(c, &arg, a->i);
+	newtab(c->f, NULL, webkit_hit_test_result_get_link_uri(h), a->i);
 }
 
 void
@@ -3507,10 +3790,8 @@ clickexternplayer(Client *c, const Arg *a, WebKitHitTestResult *h)
 int
 main(int argc, char *argv[])
 {
-	Arg arg;
-	Client *c;
-
-	memset(&arg, 0, sizeof(arg));
+	const char *uri = "about:blank";
+	Frame *f;
 
 	/* command line args */
 	ARGBEGIN {
@@ -3634,16 +3915,14 @@ main(int argc, char *argv[])
 		usage();
 	} ARGEND;
 	if (argc > 0)
-		arg.v = argv[0];
-	else
-		arg.v = "about:blank";
+		uri = argv[0];
 
 	setup();
-	c = newclient(NULL);
-	showview(NULL, c);
-
-	loaduri(c, &arg);
-	updatetitle(c);
+	f = newframe();
+	newtab(f, NULL, uri, 1);
+	if (defconfig[RunInFullscreen].val.i)
+		togglefullscreen(f->active, NULL);
+	setatom(f->active, AtomFind, "");
 
 	gtk_main();
 	cleanup();

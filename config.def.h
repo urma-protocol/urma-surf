@@ -126,6 +126,24 @@ static Key keys[] = {
 	{ MODKEY,                GDK_KEY_f,      showfind,    { 0 } },
 	{ MODKEY,                GDK_KEY_slash,  showfind,    { 0 } },
 	{ MODKEY,                GDK_KEY_comma,  showsettings, { 0 } },
+
+	/* Tabs. */
+	{ MODKEY,                GDK_KEY_t,      opentab,    { 0 } },
+	{ MODKEY,                GDK_KEY_w,      closetabkey, { 0 } },
+	{ MODKEY,                GDK_KEY_Tab,    cycletab,   { .i = +1 } },
+	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_Tab,    cycletab,   { .i = -1 } },
+	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_ISO_Left_Tab, cycletab, { .i = -1 } },
+	{ MODKEY,                GDK_KEY_Page_Down, cycletab, { .i = +1 } },
+	{ MODKEY,                GDK_KEY_Page_Up, cycletab,  { .i = -1 } },
+	{ MODKEY,                GDK_KEY_1,      selecttab,  { .i = 1 } },
+	{ MODKEY,                GDK_KEY_2,      selecttab,  { .i = 2 } },
+	{ MODKEY,                GDK_KEY_3,      selecttab,  { .i = 3 } },
+	{ MODKEY,                GDK_KEY_4,      selecttab,  { .i = 4 } },
+	{ MODKEY,                GDK_KEY_5,      selecttab,  { .i = 5 } },
+	{ MODKEY,                GDK_KEY_6,      selecttab,  { .i = 6 } },
+	{ MODKEY,                GDK_KEY_7,      selecttab,  { .i = 7 } },
+	{ MODKEY,                GDK_KEY_8,      selecttab,  { .i = 8 } },
+	{ MODKEY,                GDK_KEY_9,      selecttab,  { .i = 9 } },
 	{ MODKEY,                GDK_KEY_question, showshortcuts, { 0 } },
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_question, showshortcuts, { 0 } },
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_slash,  showshortcuts, { 0 } },
@@ -200,9 +218,10 @@ static Key keys[] = {
 /* target can be OnDoc, OnLink, OnImg, OnMedia, OnEdit, OnBar, OnSel, OnAny */
 static Button buttons[] = {
 	/* target       event mask      button  function        argument        stop event */
-	{ OnLink,       0,              2,      clicknewwindow, { .i = 0 },     1 },
-	{ OnLink,       MODKEY,         2,      clicknewwindow, { .i = 1 },     1 },
-	{ OnLink,       MODKEY,         1,      clicknewwindow, { .i = 1 },     1 },
+	/* Tabs: middle click and Ctrl-click open behind; Ctrl-middle in front. */
+	{ OnLink,       0,              2,      clicknewtab,    { .i = 0 },     1 },
+	{ OnLink,       MODKEY,         2,      clicknewtab,    { .i = 1 },     1 },
+	{ OnLink,       MODKEY,         1,      clicknewtab,    { .i = 0 },     1 },
 	{ OnAny,        0,              8,      clicknavigate,  { .i = -1 },    1 },
 	{ OnAny,        0,              9,      clicknavigate,  { .i = +1 },    1 },
 	{ OnMedia,      MODKEY,         1,      clickexternplayer, { 0 },       1 },

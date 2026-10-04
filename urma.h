@@ -25,9 +25,12 @@ gboolean urma_parse_host(const char *host, UrmaAddr *out);
 gboolean urma_parse_uri(const char *uri, UrmaAddr *out, char **path);
 gboolean urma_is_net(const char *s);
 
-/* Engine wiring: scheme handler over the verified store, secure scheme,
- * page network black hole, settings that close side channels. */
-void urma_register(WebKitWebContext *ctx, WebKitSettings *settings);
+/* Engine wiring. urma_register: scheme handler over the verified store,
+ * secure scheme, page network black hole, once per WebKitWebContext.
+ * urma_harden: the settings that close side channels, on every settings
+ * object a view starts with. */
+void urma_register(WebKitWebContext *ctx);
+void urma_harden(WebKitSettings *settings);
 
 /* Active registry per network, global across processes (small ini file).
  * Setting "" (or NULL) clears the slot: name addresses on that network fail
