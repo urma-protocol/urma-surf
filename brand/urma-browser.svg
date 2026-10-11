@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">URMA Browser — globe and lock draft v5</title>
+  <desc id="desc">The original URMA U and corner frame surround a smaller, separate globe with a central padlock. Upper and lower parallels remain complete; only the equator is interrupted behind the lock.</desc>
+  <defs>
+    <mask id="lock-clearance" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+      <rect width="512" height="512" fill="white"/>
+      <rect x="218" y="202" width="76" height="99" rx="14" fill="black"/>
+    </mask>
+  </defs>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <g stroke="#51ff0d" stroke-width="18" opacity=".68">
+      <path d="M93 178V88h98M321 88h98v90M93 328v96h98M321 424h98v-96"/>
+    </g>
+    <g stroke="#51ff0d" stroke-width="8">
+      <circle cx="256" cy="250" r="92"/>
+      <ellipse cx="256" cy="250" rx="45" ry="92"/>
+      <path d="M191.906 184Q256 208 320.094 184M191.906 316Q256 292 320.094 316"/>
+      <path d="M164 250h184" mask="url(#lock-clearance)"/>
+    </g>
+    <g stroke="#d6fa52" stroke-width="8">
+      <path d="M240 244v-17a16 16 0 0 1 32 0v17"/>
+      <rect x="226" y="244" width="60" height="48" rx="8"/>
+      <circle cx="256" cy="262" r="4" fill="#d6fa52" stroke="none"/>
+      <path d="M256 266v9" stroke-width="5"/>
+    </g>
+    <path stroke="#d6fa52" stroke-width="30" d="M54 129h75v132C129 343 182 392 256 392S383 343 383 261V129h75"/>
+  </g>
+</svg>

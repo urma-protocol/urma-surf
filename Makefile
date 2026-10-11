@@ -26,7 +26,7 @@ TESTFILES = tests/README.md tests/bridge_gate.py tests/bridge_test.c \
 DISTFILES = LICENSE NOTICES.md README Makefile config.mk config.def.h .gitignore \
             surf.1 surf-open.sh FAQ.md TODO.md surf.png $(SRC) $(WSRC) $(HEADERS) \
             fonts/README.md fonts/LICENSE $(FONTS) \
-            brand/README.md brand/urma-mark-static.svg $(MARKS)
+            brand/README.md brand/urma-browser.svg brand/render.py $(MARKS)
 
 all: options $(BROWSER) $(WLIB)
 

@@ -24,14 +24,14 @@ unlicensed.
 Installed copies include this notice, `LICENSE`, `fonts/LICENSE` and the
 asset provenance under `share/doc/urma-browser/`.
 
-## URMA mark: permission to confirm before public distribution
+## URMA Browser logo
 
-The mark rasters were recorded as renderings of the URMA site's original
-SVG. Its exact original bytes are retained in
-`brand/urma-mark-static.svg`; `brand/README.md` records source and hashes.
-The inspected SVG and site repository do not supply an explicit mark
-redistribution license. Preparation was authorized locally, but no new
-license grant is inferred from that authorization or from the browser's
-MIT/X license. The operator must confirm the mark's applicable permission
-before public distribution. No author, ownership transfer or legal terms
-are invented here.
+The operator approved the Browser-specific variant 5 for local Browser
+preparation, replacing the mark previously taken from the website. The exact
+supplied vector is retained as `brand/urma-browser.svg`; `brand/README.md`
+records its hash and reproducible rasterization procedure.
+
+Public release awaits the operator's authorization after visual review of
+the Browser. Approval for this local use does not invent a separate trademark
+license, an ownership transfer or additional legal terms. The source code's
+MIT/X license and the fonts' OFL terms remain unchanged.
