@@ -16,6 +16,7 @@
  * = bitcoin-regtest for loopback tests). The CLI inherits URMA_RPC_URL,
  * URMA_NODE_AUTH_FILE and URMA_CONFIG for its chain source. */
 #include <string.h>
+#include <errno.h>
 #include <glib.h>
 #include <glib/gstdio.h>
 #include <gio/gio.h>
@@ -367,22 +368,35 @@ urma_active_genesis(const char *net)
 	return slot[0] ? slot : NULL;
 }
 
-void
-urma_set_active_genesis(const char *net, const char *genesis)
+gboolean
+urma_set_active_genesis(const char *net, const char *genesis, GError **err)
 {
 	GKeyFile *kf = g_key_file_new();
 	char *f = activefile(), *dir = g_path_get_dirname(f);
+	GError *loaderr = NULL;
+	gboolean ok = FALSE;
 
-	g_key_file_load_from_file(kf, f, G_KEY_FILE_NONE, NULL);
+	if (!g_key_file_load_from_file(kf, f, G_KEY_FILE_NONE, &loaderr)
+	    && !g_error_matches(loaderr, G_FILE_ERROR, G_FILE_ERROR_NOENT)) {
+		g_propagate_error(err, loaderr);
+		goto done;
+	}
+	g_clear_error(&loaderr);
 	if (genesis && *genesis)
 		g_key_file_set_string(kf, "active", net, genesis);
 	else
 		g_key_file_remove_key(kf, "active", net, NULL);
-	g_mkdir_with_parents(dir, 0700);
-	g_key_file_save_to_file(kf, f, NULL);
+	if (g_mkdir_with_parents(dir, 0700) < 0) {
+		g_set_error(err, G_FILE_ERROR, g_file_error_from_errno(errno),
+		    "cannot create registry directory %s: %s", dir, g_strerror(errno));
+		goto done;
+	}
+	ok = g_key_file_save_to_file(kf, f, err);
+done:
 	g_free(dir);
 	g_free(f);
 	g_key_file_unref(kf);
+	return ok;
 }
 
 /* Published default registries, as recorded in NAMES_NETWORKS.md §6. The
@@ -518,30 +532,29 @@ urma_registry_label(const char *net, const char *genesis)
 	return label;
 }
 
-gboolean
+UrmaRegistryChoice
 urma_registry_switch_prompt(GtkWindow *parent, const char *net, const char *genesis)
 {
-	const char *cur = urma_active_genesis(net);
 	GtkWidget *d;
 	int resp;
 
-	if (cur && !strcmp(cur, genesis))
-		return TRUE;
 	d = gtk_message_dialog_new(parent, GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-	    GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO,
-	    "Switch the active registry for .%s?", net);
+	    GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE,
+	    "Choose the registry for .%s", net);
+	gtk_dialog_add_buttons(GTK_DIALOG(d), "_Cancel", GTK_RESPONSE_CANCEL,
+	    "Use _temporarily", GTK_RESPONSE_ACCEPT,
+	    "Switch _global", GTK_RESPONSE_YES, NULL);
+	gtk_dialog_set_default_response(GTK_DIALOG(d), GTK_RESPONSE_CANCEL);
 	gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(d),
 	    "This link names another registry:\n\n  %s\n  (%s)\n\n"
-	    "The switch is global for .%s, for every tab and window. Tabs opened "
-	    "by name may become invalid or resolve to other destinations. "
-	    "Nothing is resolved unless you accept.",
+	    "Temporary use stays in this tab and copies to tabs opened from it. "
+	    "Switch global saves the registry for .%s, for every tab and window; "
+	    "other name addresses may resolve elsewhere. Cancel changes nothing.",
 	    genesis, urma_registry_label(net, genesis), net);
 	resp = gtk_dialog_run(GTK_DIALOG(d));
 	gtk_widget_destroy(d);
-	if (resp != GTK_RESPONSE_YES)
-		return FALSE;
-	urma_set_active_genesis(net, genesis);
-	return TRUE;
+	return resp == GTK_RESPONSE_ACCEPT ? URMA_REGISTRY_TEMPORARY :
+	    resp == GTK_RESPONSE_YES ? URMA_REGISTRY_GLOBAL : URMA_REGISTRY_CANCEL;
 }
 
 /* `urma names resolve` over the registry's local index. Positive answers are
@@ -655,14 +668,15 @@ urma_resolve(const char *net, const char *name, const char *genesis,
 /* ---- presentation ------------------------------------------------------ */
 
 char *
-urma_display_uri(const char *docuri, const char *net, const char *name)
+urma_display_uri(const char *docuri, const char *net, const char *name,
+                 const char *genesis)
 {
 	UrmaAddr a;
 	char *tail, *out;
 	char tx[65];
 
 	if (!name || !net || !urma_parse_uri(docuri, &a, NULL) || a.kind != URMA_ADDR_PUB
-	    || strcmp(a.net, net) || !urma_resolve(net, name, NULL, tx, NULL)
+	    || strcmp(a.net, net) || !urma_resolve(net, name, genesis, tx, NULL)
 	    || strcmp(tx, a.txid))
 		return g_strdup(docuri);
 	tail = urma_tail(docuri);

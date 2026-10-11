@@ -36,7 +36,7 @@ void urma_harden(WebKitSettings *settings);
  * Setting "" (or NULL) clears the slot: name addresses on that network fail
  * until a registry is chosen again; TXID addresses are unaffected. */
 const char *urma_active_genesis(const char *net);          /* NULL when none */
-void urma_set_active_genesis(const char *net, const char *genesis);
+gboolean urma_set_active_genesis(const char *net, const char *genesis, GError **err);
 
 /* Registries the shell can offer for a network: every index scanned locally
  * (NAMES_DIR/<chain>/<genesis>.json, read for display only; resolution still
@@ -54,8 +54,11 @@ typedef struct {
 GArray *urma_registries(const char *net);    /* of UrmaRegistry; caller frees */
 const char *const *urma_nets(guint *count);   /* public suffixes, no regtest */
 const char *urma_registry_label(const char *net, const char *genesis);
-gboolean urma_registry_switch_prompt(GtkWindow *parent, const char *net,
-                                     const char *genesis);
+typedef enum {
+	URMA_REGISTRY_CANCEL, URMA_REGISTRY_TEMPORARY, URMA_REGISTRY_GLOBAL
+} UrmaRegistryChoice;
+UrmaRegistryChoice urma_registry_switch_prompt(GtkWindow *parent, const char *net,
+                                               const char *genesis);
 
 /* Resolve a name through the local names index of a registry (genesis NULL =
  * the network's active slot) by running `urma names resolve`. Fills txid. */
@@ -63,7 +66,8 @@ gboolean urma_resolve(const char *net, const char *name, const char *genesis,
                       char txid[65], GError **err);
 
 /* Address presentation. */
-char *urma_display_uri(const char *docuri, const char *net, const char *name);
+char *urma_display_uri(const char *docuri, const char *net, const char *name,
+                       const char *genesis);
 char *urma_dns_uri(const char *docuri, const char *net, const char *name,
                    const char *genesis);
 char *urma_pub_uri(const char *net, const char *txid, const char *path);
