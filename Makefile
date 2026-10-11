@@ -23,7 +23,7 @@ TESTFILES = tests/README.md tests/bridge_gate.py tests/bridge_test.c \
             tests/browser_gate.py tests/gui_driver.py tests/mock_cli.py \
             tests/fixture_store.py tests/store_gate.py tests/generate_fixture.py tests/startpage_gate.py \
             tests/fixtures/bridge.json tests/fixtures/authentic.json
-DISTFILES = LICENSE NOTICES.md README Makefile config.mk config.def.h .gitignore \
+DISTFILES = LICENSE NOTICES.md README.md Makefile config.mk config.def.h .gitignore \
             surf.1 surf-open.sh FAQ.md TODO.md surf.png $(SRC) $(WSRC) $(HEADERS) \
             fonts/README.md fonts/LICENSE $(FONTS) \
             brand/README.md brand/urma-surf.svg brand/render.py $(MARKS)
@@ -94,18 +94,18 @@ install: all
 	chmod 644 $(DESTDIR)$(LIBDIR)/$(WLIB)
 	sed 's/VERSION/$(VERSION)/g' < surf.1 > $(DESTDIR)$(MANPREFIX)/man1/$(PACKAGE).1
 	chmod 644 $(DESTDIR)$(MANPREFIX)/man1/$(PACKAGE).1
-	cp -f LICENSE NOTICES.md README $(DESTDIR)$(DOCDIR)/
+	cp -f LICENSE NOTICES.md README.md $(DESTDIR)$(DOCDIR)/
 	cp -f fonts/LICENSE fonts/README.md $(DESTDIR)$(DOCDIR)/fonts/
 	cp -f brand/README.md $(DESTDIR)$(DOCDIR)/brand/
 	chmod 644 $(DESTDIR)$(DOCDIR)/LICENSE $(DESTDIR)$(DOCDIR)/NOTICES.md \
-	    $(DESTDIR)$(DOCDIR)/README $(DESTDIR)$(DOCDIR)/fonts/LICENSE \
+	    $(DESTDIR)$(DOCDIR)/README.md $(DESTDIR)$(DOCDIR)/fonts/LICENSE \
 	    $(DESTDIR)$(DOCDIR)/fonts/README.md $(DESTDIR)$(DOCDIR)/brand/README.md
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(PACKAGE) $(DESTDIR)$(LIBDIR)/$(WLIB) \
 	    $(DESTDIR)$(MANPREFIX)/man1/$(PACKAGE).1 \
 	    $(DESTDIR)$(DOCDIR)/LICENSE $(DESTDIR)$(DOCDIR)/NOTICES.md \
-	    $(DESTDIR)$(DOCDIR)/README $(DESTDIR)$(DOCDIR)/fonts/LICENSE \
+	    $(DESTDIR)$(DOCDIR)/README.md $(DESTDIR)$(DOCDIR)/fonts/LICENSE \
 	    $(DESTDIR)$(DOCDIR)/fonts/README.md $(DESTDIR)$(DOCDIR)/brand/README.md
 	@for dir in $(DESTDIR)$(DOCDIR)/fonts $(DESTDIR)$(DOCDIR)/brand \
 	    $(DESTDIR)$(DOCDIR) $(DESTDIR)$(LIBDIR); do \
