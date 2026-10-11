@@ -1,8 +1,8 @@
-# Embedded URMA Browser logo
+# Embedded URMA Surf logo
 
-The operator approved Browser logo variant 5 on 2026-10-11 for local
-integration and visual review. It replaces the simpler website mark.
-`urma-browser.svg` is a byte-for-byte copy of the supplied
+The operator approved Browser logo variant 5 on 2026-10-11 for integration and visual review, and subsequently authorized its inclusion
+in the public URMA Surf repository. It replaces the simpler website mark.
+`urma-surf.svg` is a byte-for-byte copy of the supplied
 `urma-browser-draft-v5.svg`. The original SVG title and geometry are retained,
 including the draft filename in this provenance; no element was redrawn.
 
@@ -46,7 +46,6 @@ fed0541987d291600ed9eb52b27dd9fe388c6e7bc6c82cf759667c824b23ec52  urma-mark-64.p
 7dff18aeae85bd0cedfa7c82184d0a0ba6b01b78ca653e39a6593286a5ca8f8e  urma-mark-256.png
 ```
 
-The operator authorized this logo for local Browser preparation. Public
-release in the `urma-protocol` organization awaits approval after the visual
-review; this integration does not itself publish the Browser or create
-additional trademark terms. See `../NOTICES.md`.
+The operator authorized publication of this approved v5 logo with URMA Surf
+in `urma-protocol/urma-surf`. The source vector and raster bytes are unchanged.
+This publication does not create additional trademark terms. See `../NOTICES.md`.

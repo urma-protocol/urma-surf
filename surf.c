@@ -1188,7 +1188,7 @@ updatetitle(Client *c)
 		gtk_window_set_title(GTK_WINDOW(c->f->win), title);
 		g_free(title);
 	} else {
-		title = *name ? g_strdup_printf("%s — URMA", name) : g_strdup("URMA");
+		title = *name ? g_strdup_printf("%s — URMA Surf", name) : g_strdup("URMA Surf");
 		gtk_window_set_title(GTK_WINDOW(c->f->win), title);
 		g_free(title);
 	}
@@ -4316,7 +4316,7 @@ main(int argc, char *argv[])
 		fulluseragent = EARGF(usage());
 		break;
 	case 'v':
-		die("surf-"VERSION", see LICENSE for © details\n");
+		die("urma-surf-"VERSION", see LICENSE for © details\n");
 	case 'w':
 		showxid = 1;
 		break;

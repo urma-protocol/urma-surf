@@ -1,8 +1,8 @@
-# URMA Browser
+# URMA Surf
 
-URMA Browser is an experimental Linux browser based on surf 2.1 and
-WebKitGTK. This source preparation is version `0.1.0-experimental`; it is
-not a published or stable release. It has an inline address bar, native tabs,
+URMA Surf is an experimental Linux browser based on [Surf](https://surf.suckless.org/)
+and WebKitGTK for the [URMA protocol](https://urma.rosint.org/spec/).
+This public source version is `0.1.0-experimental`, not a stable release. It has an inline address bar, native tabs,
 publication details and registry settings. The separate `urma` CLI verifies
 and recovers URMA content; it is not bundled in this repository.
 
@@ -22,8 +22,10 @@ to browse. The regression harness also uses Python 3, Xvfb and xdotool for
 its GUI gate; see `tests/README.md`.
 
 ```sh
+git clone https://github.com/urma-protocol/urma-surf.git
+cd urma-surf
 make -j2
-./urma-browser
+./urma-surf
 ```
 
 The extension `webext-surf.so` must remain beside the local executable, or
@@ -36,7 +38,7 @@ retain their upstream names. Edit `config.mk` for build paths and
 ## Install and package
 
 The installed executable, manual and library directory use the
-`urma-browser` namespace, leaving the upstream `surf` installation alone.
+`urma-surf` namespace, leaving the upstream `surf` installation alone.
 The default prefix is `/usr/local`. To stage an installation without
 changing the system:
 
@@ -48,17 +50,17 @@ make uninstall DESTDIR=/absolute/path/to/staging PREFIX=/usr/local
 Use the same prefix/library/documentation options for installation and
 uninstallation. The staged tree contains the executable, extension, manual,
 MIT/X notice, complete OFL text and asset provenance under
-`share/doc/urma-browser/`. Uninstallation removes those named files only
+`share/doc/urma-surf/`. Uninstallation removes those named files only
 and leaves unrelated files in shared directories. The legacy upstream
 `surf-open.sh` remains in the source archive for provenance; native tabs do
 not require it, tabbed or dmenu. `FAQ.md` and `TODO.md` are retained upstream
-historical documents, rather than current URMA Browser instructions.
+historical documents, rather than current URMA Surf instructions.
 
 ```sh
 make dist
 ```
 
-This creates `urma-browser-0.1.0-experimental.tar.gz` from explicit source
+This creates `urma-surf-0.1.0-experimental.tar.gz` from explicit source
 inputs and an explicit list of approved test files. Git metadata, generated configuration,
 objects, executables, profiles and Python caches are excluded. The target
 does not clean an existing build. Tar entries are sorted with normalized
@@ -161,7 +163,7 @@ inclusion, finality or the network independently. Store network metadata
 comes from the source check during fetch; cached names are not a new chain
 scan. The `verified` badge reports these proof/content checks, not a fresh
 consensus audit or the truth of a publication. Data availability still
-depends on accessible retained records. This release preparation does not
+depends on accessible retained records. This experimental version does not
 claim mainnet testing.
 
 Declared downloads are saved from the verified store using the save
@@ -185,12 +187,12 @@ Ctrl+L focuses the address; Ctrl+T/W opens/closes a tab; Ctrl+Tab and
 Ctrl+Shift+Tab select tabs; Ctrl+1..8/9 select a numbered/last tab.
 Ctrl+F finds, Ctrl+R reloads, Ctrl+0 resets zoom, Ctrl+, opens settings,
 Ctrl+Shift+D opens publication details and Ctrl+? lists shortcuts.
-See the installed `urma-browser(1)` manual for inherited options.
+See the installed `urma-surf(1)` manual for inherited options.
 
 ```sh
 make check
 PYTHONDONTWRITEBYTECODE=1 python3 tests/browser_gate.py \
-  --browser /absolute/path/to/urma-browser --urma /absolute/path/to/urma
+  --browser /absolute/path/to/urma-surf --urma /absolute/path/to/urma
 PYTHONDONTWRITEBYTECODE=1 python3 tests/store_gate.py \
   --urma /absolute/path/to/urma --core /absolute/path/to/core-checkout
 ```
@@ -213,6 +215,9 @@ commit `48517e586cdc98bc1af7115674b554cc70c8bc2e` on `surf-webkit2`.
 The original copyright and MIT/X terms are preserved in `LICENSE`.
 Fonts retain their SIL OFL 1.1 notice in `fonts/LICENSE`.
 See `NOTICES.md`, `fonts/README.md` and `brand/README.md` for asset
-hashes and provenance. The operator approved the Browser-specific v5 logo
-for this local preparation. Public release in the `urma-protocol` organization
-awaits operator approval after visual review of the Browser.
+hashes and provenance. The approved v5 logo and native start page are included.
+
+This repository preserves the original Surf Git history and upstream author
+attributions, followed by the URMA integration commits; it is not a new root
+commit or an unrelated rewrite. The MIT/X license remains unchanged.
+Upstream authors are listed in `LICENSE` and the retained commit history.

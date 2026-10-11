@@ -1,4 +1,4 @@
-/* The approved URMA Browser logo compiled into the binary;
+/* The approved URMA Surf logo compiled into the binary;
  * see brand/README.md. */
 #ifndef BRAND_H
 #define BRAND_H

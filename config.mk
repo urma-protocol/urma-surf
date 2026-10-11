@@ -1,5 +1,5 @@
-# URMA Browser source experiment (based on surf 2.1)
-PACKAGE = urma-browser
+# URMA Surf source experiment (based on surf 2.1)
+PACKAGE = urma-surf
 VERSION = 0.1.0-experimental
 
 # Customize below to fit your system

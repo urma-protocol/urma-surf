@@ -14,7 +14,7 @@ def main():
         subprocess.run([
             "rsvg-convert", "--width", str(size), "--height", str(size),
             "--output", str(directory / f"urma-mark-{size}.png"),
-            str(directory / "urma-browser.svg"),
+            str(directory / "urma-surf.svg"),
         ], check=True, timeout=30)
 
 

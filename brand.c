@@ -1,5 +1,5 @@
-/* The approved URMA Browser logo compiled into the binary (the brand/ PNGs,
- * rasterized from brand/urma-browser.svg; brand/README.md). Decoded
+/* The approved URMA Surf logo compiled into the binary (the brand/ PNGs,
+ * rasterized from brand/urma-surf.svg; brand/README.md). Decoded
  * from memory with GdkPixbufLoader: no path, no file, no network at run time. */
 #include <stdio.h>
 #include <glib.h>

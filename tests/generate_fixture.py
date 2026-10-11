@@ -28,7 +28,7 @@ def main():
     v = module("browser_proof_primitives", "generate-vectors.py")
     web = module("browser_package_writer", "generate-web-vectors.py")
     fixtures = {}
-    with tempfile.TemporaryDirectory(prefix="urma-browser-fixture-generator-") as directory:
+    with tempfile.TemporaryDirectory(prefix="urma-surf-fixture-generator-") as directory:
         v.OUT = Path(directory)
         v.manifest = {"proofs": []}
 

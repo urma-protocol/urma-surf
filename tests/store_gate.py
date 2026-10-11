@@ -53,7 +53,7 @@ def main():
     commit = subprocess.check_output(["git", "-C", str(args.core), "rev-parse", "HEAD"],
                                      text=True, timeout=5).strip() if args.core else "operator-supplied binary"
     fixture = load_fixture()
-    with tempfile.TemporaryDirectory(prefix="urma-browser-store-") as directory:
+    with tempfile.TemporaryDirectory(prefix="urma-surf-store-") as directory:
         work = Path(directory)
         store = work / "store"
         materialize(store, fixture)

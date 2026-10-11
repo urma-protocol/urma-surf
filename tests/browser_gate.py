@@ -488,7 +488,7 @@ def main():
     if args.child:
         child(args.child, browser, args.focus)
         return
-    with tempfile.TemporaryDirectory(prefix="urma-browser-gui-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="urma-surf-gui-") as temporary:
         work = Path(temporary)
         evidence = args.evidence.resolve() if args.evidence else None
         if evidence:

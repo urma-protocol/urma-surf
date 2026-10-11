@@ -71,7 +71,7 @@ urmastart_new(GtkWidget *context, GCallback address, GCallback tab,
 	gtk_style_context_add_class(gtk_widget_get_style_context(root), "urma-start");
 	gtk_widget_set_hexpand(root, TRUE);
 	gtk_widget_set_vexpand(root, TRUE);
-	atk_object_set_name(gtk_widget_get_accessible(root), "URMA start page");
+	atk_object_set_name(gtk_widget_get_accessible(root), "URMA Surf start page");
 
 	scroll = gtk_scrolled_window_new(NULL, NULL);
 	gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
@@ -90,7 +90,7 @@ urmastart_new(GtkWidget *context, GCallback address, GCallback tab,
 	gtk_widget_set_margin_bottom(hero, 36);
 	gtk_box_pack_start(GTK_BOX(layout), hero, TRUE, TRUE, 0);
 	gtk_box_pack_start(GTK_BOX(hero), urmabrand_image(context, 128), FALSE, FALSE, 0);
-	button = label("URMA BROWSER", "start-eyebrow");
+	button = label("URMA SURF", "start-eyebrow");
 	gtk_widget_set_margin_top(button, 22);
 	gtk_widget_set_margin_bottom(button, 12);
 	gtk_box_pack_start(GTK_BOX(hero), button, FALSE, FALSE, 0);

@@ -22,7 +22,7 @@ def main():
     env = {"PATH": os.defpath, "LANG": "C", "URMA_BIN": "/nonexistent/urma",
            "ASAN_OPTIONS": "detect_leaks=0:abort_on_error=1",
            "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"}
-    with tempfile.TemporaryDirectory(prefix="urma-browser-bridge-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="urma-surf-bridge-") as temporary:
         binary = Path(temporary) / "bridge_test"
         subprocess.run([
             "cc", "-g", "-O1", "-fno-omit-frame-pointer", "-fsanitize=address,undefined",

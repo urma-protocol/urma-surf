@@ -1,6 +1,6 @@
 # Embedded fonts
 
-Compiled into the `urma-browser` executable (`fonts.c`, `.incbin`) so the chrome and the
+Compiled into the `urma-surf` executable (`fonts.c`, `.incbin`) so the chrome and the
 engine's default families need no font package and nothing from the network.
 
 | File | Family | Source | License |
@@ -32,4 +32,4 @@ original import record; the source release does not claim a fresh verification
 against a downloaded Arch/GNOME package. The embedded Mono copyright metadata
 says 2015–2026; the package's bundled notice says 2015–2025. Both original files
 are preserved, without changing the notice or font metadata. `make install`
-copies the complete OFL text and this provenance into `share/doc/urma-browser/fonts/`.
+copies the complete OFL text and this provenance into `share/doc/urma-surf/fonts/`.

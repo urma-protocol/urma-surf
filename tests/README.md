@@ -8,7 +8,7 @@ operator configuration or live node is used.
 ```
 PYTHONDONTWRITEBYTECODE=1 python3 tests/bridge_gate.py --source .
 PYTHONDONTWRITEBYTECODE=1 python3 tests/store_gate.py --urma /absolute/path/urma
-PYTHONDONTWRITEBYTECODE=1 python3 tests/browser_gate.py --browser /absolute/path/urma-browser --urma /absolute/path/urma
+PYTHONDONTWRITEBYTECODE=1 python3 tests/browser_gate.py --browser /absolute/path/urma-surf --urma /absolute/path/urma
 ```
 
 The bridge gate compiles a small ASan/UBSan executable and requires the explicit
@@ -72,5 +72,5 @@ history, compact layout, and page-created blank-window content. It requires
 zero CLI calls and uses no real CLI or network:
 
 ```
-PYTHONDONTWRITEBYTECODE=1 python3 tests/startpage_gate.py --browser /absolute/path/urma-browser --evidence /private/output/directory
+PYTHONDONTWRITEBYTECODE=1 python3 tests/startpage_gate.py --browser /absolute/path/urma-surf --evidence /private/output/directory
 ```

@@ -1,4 +1,4 @@
-# URMA Browser, derived from surf. See NOTICES.md.
+# URMA Surf, derived from surf. See NOTICES.md.
 # See LICENSE file for copyright and license details.
 .POSIX:
 
@@ -26,12 +26,12 @@ TESTFILES = tests/README.md tests/bridge_gate.py tests/bridge_test.c \
 DISTFILES = LICENSE NOTICES.md README Makefile config.mk config.def.h .gitignore \
             surf.1 surf-open.sh FAQ.md TODO.md surf.png $(SRC) $(WSRC) $(HEADERS) \
             fonts/README.md fonts/LICENSE $(FONTS) \
-            brand/README.md brand/urma-browser.svg brand/render.py $(MARKS)
+            brand/README.md brand/urma-surf.svg brand/render.py $(MARKS)
 
 all: options $(BROWSER) $(WLIB)
 
 options:
-	@echo URMA Browser build options:
+	@echo URMA Surf build options:
 	@echo "CC            = $(CC)"
 	@echo "CFLAGS        = $(SURFCFLAGS) $(CFLAGS)"
 	@echo "WEBEXTCFLAGS  = $(WEBEXTCFLAGS) $(CFLAGS)"
