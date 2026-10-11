@@ -1,8 +1,8 @@
-.TH SURF 1 surf\-VERSION
+.TH URMA-BROWSER 1 urma-browser\-VERSION
 .SH NAME
-surf \- simple webkit-based browser
+urma-browser \- experimental URMA browser based on surf
 .SH SYNOPSIS
-.B surf
+.B urma-browser
 .RB [-bBdDfFgGiIkKmMnNpPsStTvwxX]
 .RB [-a\ cookiepolicies]
 .RB [-c\ cookiefile]
@@ -13,10 +13,48 @@ surf \- simple webkit-based browser
 .RB [-z\ zoomlevel]
 .RB [URI]
 .SH DESCRIPTION
-surf is a simple Web browser based on WebKit/GTK+. It is able
-to display websites and follow links. It supports the XEmbed protocol
-which makes it possible to embed it in another application. Furthermore,
-one can point surf to another URI by setting its XProperties.
+URMA Browser is an experimental surf-derived browser using WebKitGTK.
+It provides an inline address bar, native tabs, publication details and
+registry settings. The separate
+.B urma
+CLI supplies verified URMA packages and name resolution; it is not bundled.
+The installed executable and extension directory use the
+.B urma-browser
+namespace. Source filenames and inherited profile paths retain surf names.
+.SH URMA ADDRESSES
+Accepted forms are
+.BR urma://ROOT_TXID.NET/ ,
+.BR urma://NAME.NET/
+and
+.BR urma://GENESIS.NAME.NET/ .
+Networks are ltc, tltc, tbtc and btc; Bitcoin mainnet is not enabled by the
+reference CLI. The rbtc test form requires URMA_SURF_REGTEST=1.
+No name registry is activated by default. Names require a local index
+created and updated explicitly with
+.BR "urma names scan" .
+Selecting a registry does not scan it.
+.PP
+An explicit registry differing from the tab's effective choice offers Temporary,
+Global or Cancel. Temporary commits one network-registry pair to the tab only
+after successful navigation; another network uses its global registry.
+Global resolves the selected registry and saves its persistent slot before
+loading; resolve or save failure refuses the choice without fallback.
+Cancel and failed temporary navigation retain the previous document/context.
+The visible Use global action clears that tab's temporary scope, stops pending
+navigation and prevents history from restoring old temporary choices.
+Back/Forward otherwise restore committed scope and binding. Relative links and
+reload retain publication context. Derived tabs receive an independent scope
+copy and keep the copied name binding for the same publication; blank tabs use
+global slots. Settings changes persistent global slots.
+.PP
+Documents render at a publication origin identified by network and root TXID.
+The CLI re-verifies retained proofs and the package; the browser checks resource
+hashes and lengths against the declared set. Undeclared paths and
+cross-publication initiators are refused. URMA page network traffic is blocked;
+the separate CLI fetch operation can still contact its configured source.
+Offline checks establish retained authorship and content, not current chain
+inclusion, finality or an independently proven network. The verified badge
+does not imply a fresh chain scan.
 .SH OPTIONS
 .TP
 .B \-a cookiepolicies
@@ -113,7 +151,7 @@ Specify the
 which surf should use.
 .TP
 .B \-v
-Prints version information to standard output, then exits.
+Prints version information, then exits.
 .TP
 .B \-w
 Prints xid to standard output. This can be used to script the browser in for
@@ -131,107 +169,74 @@ Specify the
 .I zoomlevel
 which surf should use.
 .SH USAGE
-.B Escape
-Stops loading current page or stops download.
+Keyboard navigation uses the inline address and find bars; dmenu is not required.
 .TP
-.B Ctrl\-h
-Walks back the history.
+.B Ctrl\-l or F6
+Focus and select the address.
 .TP
-.B Ctrl\-l
-Walks forward the history.
+.B Ctrl\-t / Ctrl\-w
+Open / close a tab. Closing the last tab closes its window.
 .TP
-.B Ctrl\-k
-Scrolls page upwards.
+.B Ctrl\-Tab / Ctrl\-Shift\-Tab
+Select the next / previous tab.
 .TP
-.B Ctrl\-j
-Scrolls page downwards.
+.B Ctrl\-1 through Ctrl\-8 / Ctrl\-9
+Select a numbered tab / the last tab.
 .TP
-.B Ctrl\-b
-Scroll up one whole page view.
+.B Alt\-Left or Ctrl\-[ / Alt\-Right or Ctrl\-]
+Back / forward.
 .TP
-.B Ctrl\-Space
-Scroll down one whole page view.
+.B Ctrl\-f or Ctrl\-/
+Find in page. Enter selects the next match, Shift\-Enter the previous;
+Escape closes the find bar.
 .TP
-.B Ctrl\-i
-Scroll horizontally to the right.
+.B Ctrl\-n / Ctrl\-Shift\-n
+Next / previous search match.
 .TP
-.B Ctrl\-u
-Scroll horizontally to the left.
+.B Ctrl\-r or F5
+Reload.
 .TP
-.B Ctrl\-Shift\-k or Ctrl\-+
-Zooms page in.
+.B Ctrl\-Shift\-r or Ctrl\-F5
+Reload while bypassing the page cache.
 .TP
-.B Ctrl\-Shift\-j or Ctrl\--
-Zooms page out.
+.B Escape or Ctrl\-c
+Stop loading.
 .TP
-.B Ctrl\-Shift\-q
-Resets Zoom.
+.B Ctrl\-+ or Ctrl\-= / Ctrl\--
+Zoom in / out. Ctrl and the scroll wheel also zoom.
 .TP
-.B Ctrl\-f and Ctrl\-/
-Opens the search-bar.
+.B Ctrl\-0
+Reset zoom to 100 percent.
 .TP
-.B Ctrl\-n
-Go to next search result.
-.TP
-.B Ctrl\-Shift\-n
-Go to previous search result.
-.TP
-.B Ctrl\-g
-Opens the URL-bar (requires dmenu installed).
-.TP
-.B Ctrl\-p
-Loads URI from primary selection.
-.TP
-.B Ctrl\-Shift\-p
-Calls Printpage Dialog.
-.TP
-.B Ctrl\-r
-Reloads the website.
-.TP
-.B Ctrl\-Shift\-r
-Reloads the website without using the cache.
-.TP
-.B Ctrl\-y
-Copies current URI to primary selection.
-.TP
-.B Ctrl\-t
-Display the current TLS certificate in a popup window.
-.TP
-.B Ctrl\-Shift\-a
-Toggle through the the
-.I cookie policies\fR.
-This will not reload the page.
-.TP
-.B Ctrl\-Shift\-b
-Toggle scrollbars. This will reload the page.
-.TP
-.B Ctrl\-Shift\-c
-Toggle caret browsing. This will reload the page.
+.B Ctrl\-,
+Open settings.
 .TP
 .B Ctrl\-Shift\-d
-Toggle dark mode.
+Show publication details.
 .TP
-.B Ctrl\-Shift\-i
-Toggle auto-loading of images. This will reload the page.
+.B Ctrl\-Shift\-y / Ctrl\-Shift\-u
+Copy link / copy link with the registry.
 .TP
-.B Ctrl\-Shift\-m
-Toggle if the
-.I stylefile
-file should be loaded. This will reload the page.
+.B Ctrl\-y / Ctrl\-p
+Copy the page address / open selected text as an address.
+.TP
+.B Ctrl\-Shift\-b
+Show or hide the address bar.
+.TP
+.B Ctrl\-Shift\-p
+Print.
 .TP
 .B Ctrl\-Shift\-o
-Open the Web Inspector (Developer Tools) window for the current page.
+Open the web inspector when enabled.
 .TP
-.B Ctrl\-Shift\-s
-Toggle script execution. This will reload the page.
-.TP
-.B Ctrl\-Shift\-t
-Toggle strict TLS check. This will reload the page.
+.B Ctrl\-?
+Show the complete shortcut sheet.
 .TP
 .B F11
-Toggle fullscreen mode.
+Toggle fullscreen.
 .SH INDICATORS OF OPERATION
-Surf is showing indicators of operation in front of the site title.
+The optional upstream toggle indicators are disabled by default.
+When ShowIndicators is enabled in configuration, they precede the site title.
 For all indicators, unless otherwise specified, a lower case letter means disabled and an upper case letter means enabled.
 .TP
 .B A
@@ -286,20 +291,57 @@ no proxy
 .B P
 using proxy
 .SH ENVIRONMENT
+.TP
+.B URMA_BIN
+CLI executable; defaults to urma on PATH.
+.TP
+.B URMA_WEB_STORE
+Verified store directory; defaults to XDG_DATA_HOME/urma/web-store or
+~/.local/share/urma/web-store.
+.TP
+.B URMA_NAMES_DIR
+Names index directory; defaults to XDG_DATA_HOME/urma/names or
+~/.local/share/urma/names. Indexes are stored as CHAIN/GENESIS.json.
+.TP
+.B URMA_CONFIG
+Inherited CLI configuration path.
+.TP
+.B URMA_RPC_URL and URMA_NODE_AUTH_FILE
+Inherited CLI local node configuration and authentication cookie-file path.
+.TP
+.B URMA_SURF_REGTEST
+Set to 1 for the isolated regtest address form.
+.TP
 .B SURF_USERAGENT
-If this variable is set upon startup, surf will use it as the
-.I useragent
-string.
+Inherited user agent override.
 .TP
 .B http_proxy
-If this variable is set and not empty upon startup, surf will use it as the http proxy.
+Inherited ordinary browser proxy. URMA pages use their isolated network context.
+.SH FILES
+.TP
+.B ~/.surf/urma-registries.ini
+Persistent active registry slots in the [active] group, keyed by network suffix.
+There is no automatic active registry.
+.TP
+.B ~/.surf/
+Inherited browser cookies, cache, user styles and certificates.
+Native tabs share a WebKit profile.
+.TP
+.B PREFIX/share/doc/urma-browser/
+Installed README, MIT/X copyright and license, complete OFL notice and asset
+provenance. The separate CLI and local user state are not part of this package.
 .SH SIGNALS
-Surf will reload the current page on
+The browser reloads the current page on
 .BR SIGHUP .
 .SH SEE ALSO
-.BR dmenu(1),
 .BR xprop(1),
-.BR tabbed(1),
 .BR xdotool(1)
-.SH BUGS
-Please report them!
+.PP
+The standalone source README and tests/README.md describe build dependencies,
+the exact CLI integration revision and the separate sanitizer, GUI and
+authentic-store gates. Ordinary non-URMA helper actions may need st, curl,
+xdg-open or mpv as configured.
+.SH STATUS
+Version VERSION is an experimental source preparation, not a stable release.
+See NOTICES.md for upstream and asset provenance, including the unresolved
+mark redistribution permission before public distribution.

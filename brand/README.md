@@ -1,13 +1,14 @@
 # Embedded URMA mark
 
-Rasters of the site's original mark, compiled into the `surf` executable (`brand.c`,
+Rasters of the site's original mark, compiled into the `urma-browser` executable (`brand.c`,
 `.incbin`) and decoded from memory at run time: no path, no file, no network.
 
-Source: `public/code/rosint/rosint-website/subdomains/urma/assets/urma-mark-static.svg`
+Source: the ROSINT website repository, `subdomains/urma/assets/urma-mark-static.svg`,
+served at https://urma.rosint.org/assets/urma-mark-static.svg.
 (viewBox 0 0 512 512, lime trace `#d6fa52`, signal frame `#51ff0d` at 0.68 opacity,
 status dot). The SVG was not modified and nothing was redrawn.
 
-Renderer: WebKitGTK itself (`probes/render_mark.py`, under Xvfb), because the mark
+Recorded renderer: WebKitGTK itself (the experiment's `render_mark.py`, under Xvfb), because the mark
 declares its colours as CSS custom properties and both librsvg 2.62 and Inkscape drop
 them when rasterizing standalone (the strokes come out empty). WebKit applies them as
 a browser does. Transparent background, square viewport equal to the viewBox aspect,
@@ -28,4 +29,15 @@ bdf283efc24af6d2d8739c8a21d90f27dfe6d3fba29f19bb28f1510f6ec91d90  urma-mark-64.p
 cd4b687de7ecbf6d06dd4f81c6e38da42d1410326e5581dee5488557c6ee09dd  urma-mark-256.png
 ```
 
-Regenerate: `Xvfb :83 & DISPLAY=:83 python3 ../probes/render_mark.py <svg> brand`.
+The original SVG is included as `urma-mark-static.svg`, copied byte for byte from
+website asset commit `09bab3e24c56f000042ade77f5ff47808ea7e52e` during source
+preparation. Its SHA-256 is
+`6df728e99465fe8c7af2c08363f8748b80e800588830b678f5a22ddd2e3cafd8`.
+The eight PNG hashes above match the retained source inputs. The historical
+renderer script is not shipped, so this release does not claim a self-contained
+PNG regeneration procedure; no renderer or private parent directory is needed
+to compile the retained images.
+
+No explicit redistribution license for the mark was found in the inspected SVG
+or website repository. See `../NOTICES.md`: permission remains an operator
+decision before public distribution; this provenance does not create a grant.

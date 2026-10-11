@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">URMA — the trace survives</title>
+  <desc id="description">A restored U-shaped trace inside a broken frame.</desc>
+  <style>
+    :root { --urma: #d6fa52; --signal: #51ff0d; }
+    .frame, .trace {
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .frame { stroke: var(--signal); stroke-width: 18; opacity: .68; }
+    .trace { stroke: var(--urma); stroke-width: 30; }
+    .status { fill: var(--signal); }
+  </style>
+
+  <g aria-hidden="true">
+    <path class="frame" d="M93 178V88h98"/>
+    <path class="frame" d="M321 88h98v90"/>
+    <path class="frame" d="M93 328v96h98"/>
+    <path class="frame" d="M321 424h98v-96"/>
+  </g>
+
+  <path class="trace" d="M54 129h75v132C129 343 182 392 256 392S383 343 383 261V129h75"/>
+  <circle class="status" cx="256" cy="337" r="12"/>
+</svg>
