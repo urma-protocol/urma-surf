@@ -1,5 +1,6 @@
-# surf version
-VERSION = 2.1
+# URMA Browser source experiment (based on surf 2.1)
+PACKAGE = urma-browser
+VERSION = 0.1.0-experimental
 
 # Customize below to fit your system
 
@@ -7,7 +8,8 @@ VERSION = 2.1
 PREFIX = /usr/local
 MANPREFIX = $(PREFIX)/share/man
 LIBPREFIX = $(PREFIX)/lib
-LIBDIR = $(LIBPREFIX)/surf
+LIBDIR = $(LIBPREFIX)/$(PACKAGE)
+DOCDIR = $(PREFIX)/share/doc/$(PACKAGE)
 
 X11INC = `pkg-config --cflags x11`
 X11LIB = `pkg-config --libs x11`

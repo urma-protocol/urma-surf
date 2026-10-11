@@ -1,0 +1,10 @@
+# Local build products; source inputs and licenses stay tracked.
+/config.h
+/surf
+/urma-browser
+/*.o
+/*.so
+/urma-browser-*.tar.gz
+/.dist.*/
+__pycache__/
+*.pyc
