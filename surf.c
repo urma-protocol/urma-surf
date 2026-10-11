@@ -40,6 +40,7 @@
 #include "brand.h"
 #include "common.h"
 #include "fonts.h"
+#include "startpage.h"
 #include "urma.h"
 
 #define LENGTH(x)               (sizeof(x) / sizeof(x[0]))
@@ -133,10 +134,10 @@ struct Frame {
 /* One tab: the view and everything that belongs to the page in it. */
 struct Client {
 	Frame *f;
-	GtkWidget *overlay, *status, *load, *tab, *tablabel;
+	GtkWidget *overlay, *status, *load, *tab, *tablabel, *startpage;
 	Parameter *config;      /* the table that applies to the current page */
 	guint zoomflash;
-	int loading, spinning;
+	int loading, spinning, startpageallowed;
 	char *bstate, *btext, *btip;   /* badge, replayed when the tab is shown */
 	/* URMA: how this tab arrived (name context) and what is shown. */
 	char *urmaname, *urmanet, *urmagenesis, *urmatxid, *urmadisp;
@@ -699,6 +700,12 @@ newframe(void)
 	return f;
 }
 
+/* Local blank-tab actions reuse the existing shell controls. */
+static void startaddress(Client *c) { showaddress(c, NULL); }
+static void starttab(Client *c) { opentab(c, NULL); }
+static void startsettings(Client *c) { showsettings(c, NULL); }
+static void startshortcuts(Client *c) { showshortcuts(c, NULL); }
+
 /* A tab: view, overlay (status line, progress line), strip button. The
  * caller decides whether it comes to the front; the page is loaded last so
  * every signal already finds a complete tab. */
@@ -715,6 +722,7 @@ newtab(Frame *f, Client *rc, Client *source, const char *uri, int foreground)
 	c->config = defconfig;
 	c->progress = 100;
 	c->urmaepoch = 1;
+	c->startpageallowed = source == NULL;
 	if (source) {
 		UrmaContext ctx = urmacapture(source);
 		urmaapply(c, &ctx);
@@ -753,6 +761,11 @@ newtab(Frame *f, Client *rc, Client *source, const char *uri, int foreground)
 
 	c->overlay = gtk_overlay_new();
 	gtk_container_add(GTK_CONTAINER(c->overlay), GTK_WIDGET(c->view));
+	c->startpage = urmastart_new(f->win, G_CALLBACK(startaddress),
+	    G_CALLBACK(starttab), G_CALLBACK(startsettings), G_CALLBACK(startshortcuts), c);
+	gtk_widget_set_no_show_all(c->startpage, TRUE);
+	gtk_widget_set_visible(c->startpage, c->startpageallowed);
+	gtk_overlay_add_overlay(GTK_OVERLAY(c->overlay), c->startpage);
 	gtk_overlay_add_overlay(GTK_OVERLAY(c->overlay), c->status);
 	gtk_overlay_add_overlay(GTK_OVERLAY(c->overlay), c->load);
 	gtk_container_add(GTK_CONTAINER(f->stack), c->overlay);
@@ -792,8 +805,8 @@ newtab(Frame *f, Client *rc, Client *source, const char *uri, int foreground)
 
 	if (foreground || !f->active)
 		activatetab(c);
-	if (uri && *uri) {
-		Arg a = { .v = uri };
+	if ((uri && *uri) || !rc) {
+		Arg a = { .v = uri && *uri ? uri : "about:blank" };
 		loaduricontext(c, &a, source == NULL);
 	}
 	return c;
@@ -986,7 +999,8 @@ tabaddclicked(GtkButton *b, Frame *f)
 void
 settablabel(Client *c)
 {
-	const char *t = c->title && *c->title ? c->title : geturi(c);
+	const char *t = gtk_widget_get_visible(c->startpage) ? "Start" :
+	    c->title && *c->title ? c->title : geturi(c);
 
 	gtk_label_set_text(GTK_LABEL(c->tablabel), t);
 	gtk_widget_set_tooltip_text(c->tab, displayuri(c));
@@ -1083,6 +1097,8 @@ loaduricontext(Client *c, const Arg *a, gboolean shell)
 	}
 
 	urmainvalidate(c, TRUE);
+	if (shell && !strcmp(url, "about:blank"))
+		c->startpageallowed = TRUE;
 	setatom(c, AtomUri, url);
 
 	if (strcmp(url, geturi(c)) == 0) {
@@ -1151,7 +1167,8 @@ void
 updatetitle(Client *c)
 {
 	char *title;
-	const char *name = c->overtitle ? c->overtitle :
+	const char *name = gtk_widget_get_visible(c->startpage) ? "Start" :
+	                   c->overtitle ? c->overtitle :
 	                   c->title ? c->title : "";
 
 	settablabel(c);
@@ -3513,6 +3530,10 @@ loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c)
 		c->https = webkit_web_view_get_tls_info(c->view, &c->cert,
 		                                        &c->tlserr);
 		urmacommit(c, uri);
+		/* This native panel covers only a committed blank document. It is
+		 * neither web content nor an authenticated publication. Pending
+		 * navigation leaves the previous document/presentation intact. */
+		gtk_widget_set_visible(c->startpage, c->startpageallowed && !strcmp(uri, "about:blank"));
 		if (f->active == c && !gtk_widget_has_focus(f->entry))
 			gtk_entry_set_text(GTK_ENTRY(f->entry), displayuri(c));
 		/* FACELIFT: say what the committed document is. A publication

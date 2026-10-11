@@ -170,6 +170,15 @@ the configurable `st` + `curl`, `xdg-open` and `mpv` helpers; install
 them if using those actions. dmenu is not needed for the inline address or
 find bars.
 
+## Start page
+
+Starting without a URL, opening a blank tab, or entering `about:blank` displays
+a local start page with the approved Browser logo, an address action and native
+New tab, Settings and Shortcuts buttons. It uses embedded assets and makes no
+CLI or network request. The address remains `about:blank`; the presentation
+leaves when navigation commits. Page-created blank windows remain available
+for the page's own content.
+
 ## Keys and tests
 
 Ctrl+L focuses the address; Ctrl+T/W opens/closes a tab; Ctrl+Tab and

@@ -1,5 +1,5 @@
-/* The URMA mark, rasterized from the site's original SVG and compiled into
- * the binary; see brand/README.md. */
+/* The approved URMA Browser logo compiled into the binary;
+ * see brand/README.md. */
 #ifndef BRAND_H
 #define BRAND_H
 

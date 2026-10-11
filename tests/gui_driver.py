@@ -60,7 +60,7 @@ class Driver:
             os.close(read_fd)
             os.close(write_fd)
         self.blog = (work / "browser.log").open("w")
-        self.child = subprocess.Popen([str(browser), uri], cwd=work, env=self.env,
+        self.child = subprocess.Popen([str(browser)] + ([uri] if uri is not None else []), cwd=work, env=self.env,
                                       stdout=self.blog, stderr=self.blog, )
         self.processes.append(self.child)
         self.window = wait(self.find_window, "browser window")

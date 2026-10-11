@@ -5,8 +5,8 @@
 include config.mk
 
 BROWSER = $(PACKAGE)
-HEADERS = arg.h common.h urma.h fonts.h brand.h
-SRC = surf.c urma.c fonts.c brand.c
+HEADERS = arg.h common.h urma.h fonts.h brand.h startpage.h
+SRC = surf.c urma.c fonts.c brand.c startpage.c
 WSRC = webext-surf.c
 FONTS = fonts/AdwaitaSans-Regular.ttf fonts/AdwaitaMono-Regular.ttf
 MARKS = brand/urma-mark-16.png brand/urma-mark-22.png brand/urma-mark-32.png \
@@ -21,7 +21,7 @@ SOURCE_DATE_EPOCH = 0
 # Approved test source/fixture paths, coordinated with their owner.
 TESTFILES = tests/README.md tests/bridge_gate.py tests/bridge_test.c \
             tests/browser_gate.py tests/gui_driver.py tests/mock_cli.py \
-            tests/fixture_store.py tests/store_gate.py tests/generate_fixture.py \
+            tests/fixture_store.py tests/store_gate.py tests/generate_fixture.py tests/startpage_gate.py \
             tests/fixtures/bridge.json tests/fixtures/authentic.json
 DISTFILES = LICENSE NOTICES.md README Makefile config.mk config.def.h .gitignore \
             surf.1 surf-open.sh FAQ.md TODO.md surf.png $(SRC) $(WSRC) $(HEADERS) \

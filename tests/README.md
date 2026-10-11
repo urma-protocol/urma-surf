@@ -65,3 +65,12 @@ mock fetches only refuse: stale failure/cancellation ordering is observed, not
 successful obsolete verification. Callback checks observe actual WebKit ordering, not independent
 per-callback request tokens or proof of every identical-URI race. No live-network
 acceptance is claimed.
+
+The start-page gate launches the Browser with no URL and checks its native
+about:blank presentation, actions, independent tabs, reload, explicit-blank
+history, compact layout, and page-created blank-window content. It requires
+zero CLI calls and uses no real CLI or network:
+
+```
+PYTHONDONTWRITEBYTECODE=1 python3 tests/startpage_gate.py --browser /absolute/path/urma-browser --evidence /private/output/directory
+```
