@@ -154,7 +154,8 @@ struct Client {
 	GTlsCertificateFlags tlserr;
 	guint64 pageid;
 	int progress, https, insecure, errorpage, errbadge;
-	const char *title, *overtitle, *targeturi;
+	char *title;
+	const char *overtitle, *targeturi;
 	Client *next;
 };
 
@@ -202,6 +203,7 @@ static const char *geturi(Client *c);
 static void setatom(Client *c, int a, const char *v);
 static const char *getatom(Client *c, int a);
 static void updatetitle(Client *c);
+static void settitle(Client *c, const char *title);
 static void gettogglestats(Client *c);
 static void getpagestats(Client *c);
 static WebKitCookieAcceptPolicy cookiepolicy_get(Client *c);
@@ -250,6 +252,8 @@ static UrmaContext urmacapture(Client *c);
 static void urmaapply(Client *c, const UrmaContext *ctx);
 static void urmainvalidate(Client *c, gboolean stopload);
 static void urmasyncscope(Client *c);
+static void urmarestorechrome(Client *c);
+static void urmamainresource(WebKitWebView *v, WebKitWebResource *resource, WebKitURIRequest *request, Client *c);
 static void urmaglobal(GtkButton *b, Frame *f);
 static void urmacommit(Client *c, const char *uri);
 static void urmahistorychanged(WebKitBackForwardList *list,
@@ -811,6 +815,8 @@ destroyclient(Client *c)
 	g_signal_handlers_disconnect_by_data(c->view, c);
 	g_signal_handlers_disconnect_by_data(c->finder, c);
 	webkit_web_view_stop_loading(c->view);
+	c->targeturi = c->overtitle = NULL;
+	g_clear_object(&c->mousepos);
 	urmaclearctx(c);
 	g_free(c->urmadocumenturi);
 	g_clear_object(&c->failedcert);
@@ -826,6 +832,7 @@ destroyclient(Client *c)
 	g_free(c->bstate);
 	g_free(c->btext);
 	g_free(c->btip);
+	g_free(c->title);
 	free(c);
 }
 
@@ -1130,6 +1137,14 @@ getatom(Client *c, int a)
 	XFree(p);
 
 	return buf;
+}
+
+void
+settitle(Client *c, const char *title)
+{
+	char *owned = g_strdup(title);
+	g_free(c->title);
+	c->title = owned;
 }
 
 void
@@ -1666,7 +1681,8 @@ newview(Client *c, WebKitWebView *rv)
 	g_signal_connect(G_OBJECT(v), "load-failed",
 			 G_CALLBACK(loadfailed), c);
 	g_signal_connect(G_OBJECT(v), "load-changed",
-			 G_CALLBACK(loadchanged), c);
+	                 G_CALLBACK(loadchanged), c);
+	g_signal_connect(G_OBJECT(v), "resource-load-started", G_CALLBACK(urmamainresource), c);
 	g_signal_connect(G_OBJECT(v), "mouse-target-changed",
 			 G_CALLBACK(mousetargetchanged), c);
 	g_signal_connect(G_OBJECT(v), "permission-request",
@@ -1817,6 +1833,20 @@ urmadestinationmatches(const char *a, const char *b)
 	return same;
 }
 
+static void
+urmamainresource(WebKitWebView *v, WebKitWebResource *resource, WebKitURIRequest *request, Client *c)
+{
+	const char *uri = webkit_uri_request_get_uri(request);
+	UrmaAddr ad;
+	if (resource != webkit_web_view_get_main_resource(v) || !c->loading
+	    || !c->urmanavigationuri || c->urmanavigationgeneration != c->urmageneration
+	    || !urma_parse_uri(uri, &ad, NULL)
+	    || (c->urmapendinguri && !urmasameuri(uri, c->urmapendinguri)))
+		return;
+	g_free(c->urmanavigationuri);
+	c->urmanavigationuri = g_strdup(uri);
+}
+
 void
 urmahistorychanged(WebKitBackForwardList *list, WebKitBackForwardListItem *added,
     GList *removed, Client *c)
@@ -1829,6 +1859,10 @@ urmahistorychanged(WebKitBackForwardList *list, WebKitBackForwardListItem *added
 	    && urma_parse_uri(uri, &to, NULL)
 	    && from.kind == URMA_ADDR_PUB && to.kind == URMA_ADDR_PUB
 	    && !strcmp(from.net, to.net) && !strcmp(from.txid, to.txid);
+	if ((c->urmapendinguri && !urmasameuri(uri, c->urmapendinguri))
+	    || (c->loading && !urmasameuri(uri, c->urmanavigationuri)
+	        && !(samepub && urmasameuri(c->urmanavigationuri, c->urmadocumenturi))))
+		return;
 	if (uri && !c->urmaerrorload && c->urmadocumenturi
 	    && (urmasameuri(uri, c->urmadocumenturi) || (samepub
 	        && (!c->loading || urmasameuri(c->urmanavigationuri, c->urmadocumenturi))))) {
@@ -1911,6 +1945,18 @@ urmaglobal(GtkButton *b, Frame *f)
 	setstatus(c, "Using global registries; temporary history scopes cleared");
 }
 
+void
+urmarestorechrome(Client *c)
+{
+	if (!c->urmadocumenturi)
+		return;
+	setatom(c, AtomUri, c->urmadocumenturi);
+	if (c->f->active == c && !gtk_widget_has_focus(c->f->entry))
+		gtk_entry_set_text(GTK_ENTRY(c->f->entry), displayuri(c));
+	settitle(c, webkit_web_view_get_title(c->view));
+	updatetitle(c);
+}
+
 gboolean
 urmaresolveload(Client *c, const UrmaAddr *ad, const char *tail)
 {
@@ -1936,7 +1982,7 @@ urmaresolveload(Client *c, const UrmaAddr *ad, const char *tail)
 		if (!c || c->urmageneration != generation)
 			return TRUE;
 		if (choice == URMA_REGISTRY_CANCEL) {
-			setatom(c, AtomUri, urmadocument(c));
+			urmarestorechrome(c);
 			setstatus(c, "Registry choice cancelled; page unchanged");
 			return TRUE;
 		}
@@ -1975,7 +2021,7 @@ urmaresolveload(Client *c, const UrmaAddr *ad, const char *tail)
 failed:
 	msg = g_strdup_printf("cannot open %s.%s: %s", ad->name, ad->net,
 	    err ? err->message : "unknown error");
-	setatom(c, AtomUri, urmadocument(c));
+	urmarestorechrome(c);
 	setstatus(c, msg);
 	setbadge(c, "error", "unresolved", msg);
 	c->errbadge = 1;
@@ -2275,6 +2321,10 @@ clearzoomflash(gpointer data)
 	Client *c = data;
 
 	c->zoomflash = 0;
+	if (c->errbadge) {
+		setstatus(c, c->btip);
+		return G_SOURCE_REMOVE;
+	}
 	if (!c->targeturi)
 		setstatus(c, NULL);
 	else
@@ -2953,7 +3003,8 @@ fetchnotify(UrmaFetchEvent ev, const char *net, const char *txid,
 	char *msg;
 
 	for (c = clients; c; c = c->next) {
-		if (!urma_parse_uri(geturi(c), &ad, NULL)
+		if (!c->loading || c->urmanavigationgeneration != c->urmageneration
+		    || !urma_parse_uri(c->urmanavigationuri, &ad, NULL)
 		    || ad.kind != URMA_ADDR_PUB || strcmp(ad.txid, txid)
 		    || strcmp(ad.net, net))
 			continue;
@@ -2970,6 +3021,7 @@ fetchnotify(UrmaFetchEvent ev, const char *net, const char *txid,
 			setstatus(c, "recovered and verified; rendering");
 			break;
 		case URMA_FETCH_FAILED:
+			c->errbadge = 1;
 			setspinning(c, 0);
 			msg = g_strdup_printf("recovery failed: %s", detail ? detail : "unknown");
 			setbadge(c, "error", "unavailable", msg);
@@ -3062,6 +3114,9 @@ buildchrome(Frame *f)
 	    "button.urma-tabadd:hover { background: #1f2b25; color: #ecebe3; }"
 	    ".urma-bar { background: #0f1512; padding: 6px 8px;"
 	    "  border-bottom: 1px solid #1f2b25; }"
+	    "label.urma-dns { font-family: \"" URMA_FONT_SANS "\", sans-serif;"
+	    "  font-size: 9pt; font-weight: 700; color: #d6fa52;"
+	    "  background: #1a251f; padding: 4px 6px; border-radius: 4px; }"
 	    "button.urma-brand { font-family: \"" URMA_FONT_SANS "\", sans-serif;"
 	    "  font-weight: 800; font-size: 11pt; letter-spacing: 0.1em;"
 	    "  color: #d6fa52; padding: 0 8px; margin-right: 6px; min-height: 28px;"
@@ -3242,6 +3297,7 @@ buildchrome(Frame *f)
 	gtk_widget_set_no_show_all(f->badge, TRUE);
 
 	f->dns = gtk_label_new(NULL);
+	gtk_style_context_add_class(gtk_widget_get_style_context(f->dns), "urma-dns");
 	gtk_widget_set_no_show_all(f->dns, TRUE);
 	f->globaldns = gtk_button_new_with_label("Use global");
 	gtk_widget_set_no_show_all(f->globaldns, TRUE);
@@ -3429,7 +3485,7 @@ loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c)
 		c->urmanavigationgeneration = c->urmageneration;
 		setatom(c, AtomUri, uri);
 		setloading(c, 1);
-		c->title = uri;
+		settitle(c, uri);
 		c->https = c->insecure = 0;
 		seturiparameters(c, uri, loadtransient);
 		/* The badge of a failed load survives the alternate error page's
@@ -3443,7 +3499,7 @@ loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c)
 		break;
 	case WEBKIT_LOAD_REDIRECTED:
 		setatom(c, AtomUri, uri);
-		c->title = uri;
+		settitle(c, uri);
 		seturiparameters(c, uri, loadtransient);
 		break;
 	case WEBKIT_LOAD_COMMITTED:
@@ -3452,7 +3508,7 @@ loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c)
 		    || !urmasameuri(uri, c->urmanavigationuri)))
 			break;
 		setatom(c, AtomUri, uri);
-		c->title = uri;
+		settitle(c, uri);
 		seturiparameters(c, uri, loadcommitted);
 		c->https = webkit_web_view_get_tls_info(c->view, &c->cert,
 		                                        &c->tlserr);
@@ -3515,7 +3571,7 @@ progresschanged(WebKitWebView *v, GParamSpec *ps, Client *c)
 void
 titlechanged(WebKitWebView *view, GParamSpec *ps, Client *c)
 {
-	c->title = webkit_web_view_get_title(c->view);
+	settitle(c, webkit_web_view_get_title(c->view));
 	updatetitle(c);
 }
 
@@ -3524,9 +3580,10 @@ mousetargetchanged(WebKitWebView *v, WebKitHitTestResult *h, guint modifiers,
     Client *c)
 {
 	WebKitHitTestResultContext hc = webkit_hit_test_result_get_context(h);
+	WebKitHitTestResult *previous = c->mousepos;
 
 	/* Keep the hit test to know where is the pointer on the next click */
-	c->mousepos = h;
+	c->mousepos = g_object_ref(h);
 
 	if (hc & OnLink)
 		c->targeturi = webkit_hit_test_result_get_link_uri(h);
@@ -3538,10 +3595,11 @@ mousetargetchanged(WebKitWebView *v, WebKitHitTestResult *h, guint modifiers,
 		c->targeturi = NULL;
 
 	c->overtitle = c->targeturi;
+	g_clear_object(&previous);
 	/* MODERNISE: show the link target in the status line, where a browser
 	 * is expected to put it, instead of only in the window title. A live
 	 * zoom readout wins until it expires, so the two do not flicker. */
-	if (!c->zoomflash)
+	if (!c->zoomflash && !c->errbadge)
 		setstatus(c, c->targeturi);
 	updatetitle(c);
 }
@@ -3560,7 +3618,7 @@ loadfailed(WebKitWebView *v, WebKitLoadEvent e, gchar *uri, GError *err,
 	if (c->urmapendinguri && urmasameuri(uri, c->urmapendinguri)) {
 		urmainvalidate(c, FALSE);
 		if (c->urmadocumenturi) {
-			setatom(c, AtomUri, c->urmadocumenturi);
+			urmarestorechrome(c);
 			setstatus(c, err ? err->message : "Navigation failed; page unchanged");
 			setbadge(c, "error", "unavailable", err ? err->message : NULL);
 			c->errbadge = 1;
@@ -3604,7 +3662,7 @@ loadfailed(WebKitWebView *v, WebKitLoadEvent e, gchar *uri, GError *err,
 	}
 	if (c->urmadocumenturi && urma_is_uri(uri)) {
 		urmainvalidate(c, FALSE);
-		setatom(c, AtomUri, c->urmadocumenturi);
+		urmarestorechrome(c);
 		setstatus(c, err ? err->message : "Navigation failed; page unchanged");
 		setbadge(c, "error", "unavailable", err ? err->message : NULL);
 		c->errbadge = 1;
