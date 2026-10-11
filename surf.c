@@ -110,11 +110,19 @@ typedef struct {
 typedef struct Frame Frame;
 typedef struct Client Client;
 
+typedef struct { char net[8], genesis[65]; } UrmaScope;
+typedef struct {
+	char name[64], net[8], genesis[65], txid[65];
+	UrmaScope scope;
+} UrmaContext;
+typedef struct { UrmaContext context; guint64 epoch; } UrmaHistory;
+
 /* One window: the chrome and the tabs it holds. */
 struct Frame {
 	GtkWidget *win, *box, *strip, *tabs, *tabadd, *stack;
 	GtkWidget *bar, *brand, *back, *forward, *reload;
 	GtkWidget *pill, *entry, *badge, *spin, *gear, *popover, *focuscombo;
+	GtkWidget *dns, *globaldns;
 	GtkWidget *findbar, *findentry, *findcount;
 	Client *active;
 	Window xid;
@@ -132,6 +140,11 @@ struct Client {
 	char *bstate, *btext, *btip;   /* badge, replayed when the tab is shown */
 	/* URMA: how this tab arrived (name context) and what is shown. */
 	char *urmaname, *urmanet, *urmagenesis, *urmatxid, *urmadisp;
+	UrmaScope urmascope;
+	UrmaContext urmapending;
+	char *urmapendinguri, *urmadocumenturi, *urmanavigationuri;
+	guint64 urmageneration, urmapendinggeneration, urmanavigationgeneration, urmaepoch;
+	int urmapendingreset, urmaerrorload;
 	WebKitWebView *view;
 	WebKitSettings *settings;
 	WebKitWebInspector *inspector;
@@ -209,7 +222,7 @@ static void cleanup(void);
 /* Frames and tabs */
 static Frame *newframe(void);
 static void destroyframe(Frame *f);
-static Client *newtab(Frame *f, Client *rc, const char *uri, int foreground);
+static Client *newtab(Frame *f, Client *rc, Client *source, const char *uri, int foreground);
 static void destroyclient(Client *c);
 static void activatetab(Client *c);
 static void closetab(Client *c);
@@ -232,6 +245,16 @@ static gboolean urmaresolveload(Client *c, const UrmaAddr *ad, const char *tail)
 static void urmadetails(Client *c, const Arg *a);
 static const char *displayuri(Client *c);
 static void urmaclearctx(Client *c);
+static const char *urmadocument(Client *c);
+static UrmaContext urmacapture(Client *c);
+static void urmaapply(Client *c, const UrmaContext *ctx);
+static void urmainvalidate(Client *c, gboolean stopload);
+static void urmasyncscope(Client *c);
+static void urmaglobal(GtkButton *b, Frame *f);
+static void urmacommit(Client *c, const char *uri);
+static void urmahistorychanged(WebKitBackForwardList *list,
+    WebKitBackForwardListItem *added, GList *removed, Client *c);
+static void loaduricontext(Client *c, const Arg *a, gboolean shell);
 static void copylink(Client *c, const Arg *a);
 static void buildchrome(Frame *f);
 static GtkWidget *navbutton(const char *icon, const char *tip, GCallback cb,
@@ -676,7 +699,7 @@ newframe(void)
  * caller decides whether it comes to the front; the page is loaded last so
  * every signal already finds a complete tab. */
 Client *
-newtab(Frame *f, Client *rc, const char *uri, int foreground)
+newtab(Frame *f, Client *rc, Client *source, const char *uri, int foreground)
 {
 	Client *c;
 	GdkRGBA bgcolor = { 0 };
@@ -687,6 +710,11 @@ newtab(Frame *f, Client *rc, const char *uri, int foreground)
 	c->f = f;
 	c->config = defconfig;
 	c->progress = 100;
+	c->urmaepoch = 1;
+	if (source) {
+		UrmaContext ctx = urmacapture(source);
+		urmaapply(c, &ctx);
+	}
 	c->next = clients;
 	clients = c;
 
@@ -694,6 +722,8 @@ newtab(Frame *f, Client *rc, const char *uri, int foreground)
 	c->finder = webkit_web_view_get_find_controller(c->view);
 	c->inspector = webkit_web_view_get_inspector(c->view);
 	c->pageid = webkit_web_view_get_page_id(c->view);
+	g_signal_connect(webkit_web_view_get_back_forward_list(c->view), "changed",
+	    G_CALLBACK(urmahistorychanged), c);
 	g_signal_connect(G_OBJECT(c->finder), "found-text",
 	                 G_CALLBACK(foundtext), c);
 	g_signal_connect(G_OBJECT(c->finder), "failed-to-find-text",
@@ -760,7 +790,7 @@ newtab(Frame *f, Client *rc, const char *uri, int foreground)
 		activatetab(c);
 	if (uri && *uri) {
 		Arg a = { .v = uri };
-		loaduri(c, &a);
+		loaduricontext(c, &a, source == NULL);
 	}
 	return c;
 }
@@ -775,10 +805,14 @@ destroyclient(Client *c)
 		g_source_remove(c->zoomflash);
 		c->zoomflash = 0;
 	}
+	urmainvalidate(c, FALSE);
+	g_signal_handlers_disconnect_by_data(
+	    webkit_web_view_get_back_forward_list(c->view), c);
 	g_signal_handlers_disconnect_by_data(c->view, c);
 	g_signal_handlers_disconnect_by_data(c->finder, c);
 	webkit_web_view_stop_loading(c->view);
 	urmaclearctx(c);
+	g_free(c->urmadocumenturi);
 	g_clear_object(&c->failedcert);
 	gtk_widget_destroy(c->tab);
 	gtk_widget_destroy(c->overlay);
@@ -906,11 +940,12 @@ syncchrome(Frame *f)
 	if (!gtk_widget_has_focus(f->entry))
 		gtk_entry_set_text(GTK_ENTRY(f->entry), displayuri(c));
 	paintbadge(c);
+	urmasyncscope(c);
 	setspinning(c, c->spinning);
 	setloading(c, c->loading);
 	syncnav(c);
 	updatetitle(c);
-	setatom(c, AtomUri, geturi(c));
+	setatom(c, AtomUri, urmadocument(c));
 }
 
 void
@@ -964,6 +999,12 @@ clientofview(WebKitWebView *v)
 void
 loaduri(Client *c, const Arg *a)
 {
+	loaduricontext(c, a, TRUE);
+}
+
+void
+loaduricontext(Client *c, const Arg *a, gboolean shell)
+{
 	struct stat st;
 	char *url, *path, *apath;
 	const char *uri = a->v;
@@ -986,7 +1027,18 @@ loaduri(Client *c, const Arg *a)
 				urmaresolveload(c, &ad, tail);
 				g_free(tail);
 			} else {
-				urmaclearctx(c);
+				urmainvalidate(c, TRUE);
+				c->urmapending = urmacapture(c);
+				if (shell || strcmp(ad.txid, c->urmapending.txid)
+				    || strcmp(ad.net, c->urmapending.net)) {
+					c->urmapending.name[0] = c->urmapending.net[0] =
+					    c->urmapending.genesis[0] = c->urmapending.txid[0] = 0;
+				}
+				if (shell)
+					memset(&c->urmapending.scope, 0, sizeof(c->urmapending.scope));
+				c->urmapendingreset = shell;
+				c->urmapendinguri = g_strdup(uri);
+				c->urmapendinggeneration = c->urmageneration;
 				setatom(c, AtomUri, uri);
 				webkit_web_view_load_uri(c->view, uri);
 				updatetitle(c);
@@ -1023,6 +1075,7 @@ loaduri(Client *c, const Arg *a)
 			free(apath);
 	}
 
+	urmainvalidate(c, TRUE);
 	setatom(c, AtomUri, url);
 
 	if (strcmp(url, geturi(c)) == 0) {
@@ -1675,52 +1728,270 @@ urmaclearctx(Client *c)
 	g_clear_pointer(&c->urmadisp, g_free);
 }
 
-/* Resolve a name form (short or explicit registry) and load the publication
- * form. An explicit genesis that differs from the network's active slot asks
- * for the global switch first; declined means nothing is loaded. */
+static const char *
+urmadocument(Client *c)
+{
+	return c->urmadocumenturi ? c->urmadocumenturi : geturi(c);
+}
+
+static const char *
+urmaeffective(Client *c, const char *net)
+{
+	return c->urmascope.genesis[0] && !strcmp(c->urmascope.net, net) ?
+	    c->urmascope.genesis : urma_active_genesis(net);
+}
+
+UrmaContext
+urmacapture(Client *c)
+{
+	UrmaContext ctx = { .scope = c->urmascope };
+	g_strlcpy(ctx.name, c->urmaname ? c->urmaname : "", sizeof(ctx.name));
+	g_strlcpy(ctx.net, c->urmanet ? c->urmanet : "", sizeof(ctx.net));
+	g_strlcpy(ctx.genesis, c->urmagenesis ? c->urmagenesis : "", sizeof(ctx.genesis));
+	g_strlcpy(ctx.txid, c->urmatxid ? c->urmatxid : "", sizeof(ctx.txid));
+	return ctx;
+}
+
+void
+urmaapply(Client *c, const UrmaContext *ctx)
+{
+	urmaclearctx(c);
+	if (ctx->name[0]) {
+		c->urmaname = g_strdup(ctx->name);
+		c->urmanet = g_strdup(ctx->net);
+		c->urmagenesis = g_strdup(ctx->genesis);
+		c->urmatxid = g_strdup(ctx->txid);
+	}
+	c->urmascope = ctx->scope;
+}
+
+void
+urmainvalidate(Client *c, gboolean stopload)
+{
+	c->urmageneration++;
+	g_clear_pointer(&c->urmapendinguri, g_free);
+	g_clear_pointer(&c->urmanavigationuri, g_free);
+	c->urmapendingreset = 0;
+	if (stopload) {
+		webkit_web_view_stop_loading(c->view);
+		setloading(c, 0);
+		setspinning(c, 0);
+	}
+}
+
+static gboolean
+urmasameuri(const char *a, const char *b)
+{
+	GUri *x = a ? g_uri_parse(a, G_URI_FLAGS_NONE, NULL) : NULL;
+	GUri *y = b ? g_uri_parse(b, G_URI_FLAGS_NONE, NULL) : NULL;
+	gboolean same = x && y && !g_strcmp0(g_uri_get_scheme(x), g_uri_get_scheme(y))
+	    && !g_strcmp0(g_uri_get_host(x), g_uri_get_host(y))
+	    && !g_strcmp0(g_uri_get_path(x), g_uri_get_path(y))
+	    && !g_strcmp0(g_uri_get_query(x), g_uri_get_query(y));
+	if (x) g_uri_unref(x);
+	if (y) g_uri_unref(y);
+	return same;
+}
+
+static void
+urmasnapshot(Client *c, WebKitBackForwardListItem *item)
+{
+	UrmaHistory *h;
+	if (!item || c->urmaerrorload)
+		return;
+	h = g_new0(UrmaHistory, 1);
+	h->context = urmacapture(c);
+	h->epoch = c->urmaepoch;
+	g_object_set_data_full(G_OBJECT(item), "urma-context", h, g_free);
+}
+
+static gboolean
+urmadestinationmatches(const char *a, const char *b)
+{
+	GUri *x = a ? g_uri_parse(a, G_URI_FLAGS_NONE, NULL) : NULL;
+	GUri *y = b ? g_uri_parse(b, G_URI_FLAGS_NONE, NULL) : NULL;
+	gboolean same = x && y && urmasameuri(a, b)
+	    && !g_strcmp0(g_uri_get_fragment(x), g_uri_get_fragment(y));
+	if (x) g_uri_unref(x);
+	if (y) g_uri_unref(y);
+	return same;
+}
+
+void
+urmahistorychanged(WebKitBackForwardList *list, WebKitBackForwardListItem *added,
+    GList *removed, Client *c)
+{
+	WebKitBackForwardListItem *item = webkit_back_forward_list_get_current_item(list);
+	const char *uri = item ? webkit_back_forward_list_item_get_uri(item) : NULL;
+	UrmaAddr from, to;
+	gboolean samepub = c->urmadocumenturi
+	    && urma_parse_uri(c->urmadocumenturi, &from, NULL)
+	    && urma_parse_uri(uri, &to, NULL)
+	    && from.kind == URMA_ADDR_PUB && to.kind == URMA_ADDR_PUB
+	    && !strcmp(from.net, to.net) && !strcmp(from.txid, to.txid);
+	if (uri && !c->urmaerrorload && c->urmadocumenturi
+	    && (urmasameuri(uri, c->urmadocumenturi) || (samepub
+	        && (!c->loading || urmasameuri(c->urmanavigationuri, c->urmadocumenturi))))) {
+		urmacommit(c, uri);
+		if (c->urmanavigationuri) {
+			g_free(c->urmanavigationuri);
+			c->urmanavigationuri = g_strdup(uri);
+		}
+	}
+}
+
+void
+urmacommit(Client *c, const char *uri)
+{
+	WebKitBackForwardListItem *item = webkit_back_forward_list_get_current_item(
+	    webkit_web_view_get_back_forward_list(c->view));
+	UrmaHistory *h = item ? g_object_get_data(G_OBJECT(item), "urma-context") : NULL;
+	UrmaAddr ad;
+
+	if (c->urmaerrorload)
+		return;
+	if (c->urmapendinguri && c->urmapendinggeneration == c->urmageneration
+	    && urmadestinationmatches(uri, c->urmapendinguri)
+	    && urma_parse_uri(uri, &ad, NULL) && ad.kind == URMA_ADDR_PUB) {
+		UrmaContext ctx = c->urmapending;
+		if (c->urmapendingreset)
+			c->urmaepoch++;
+		g_clear_pointer(&c->urmapendinguri, g_free);
+		c->urmapendingreset = 0;
+		urmaapply(c, &ctx);
+	} else if (h) {
+		UrmaContext ctx = h->context;
+		if (h->epoch != c->urmaepoch)
+			ctx.scope = c->urmascope;
+		urmaapply(c, &ctx);
+	} else if (c->urmatxid && (!urma_parse_uri(uri, &ad, NULL)
+	    || ad.kind != URMA_ADDR_PUB || strcmp(ad.txid, c->urmatxid)
+	    || strcmp(ad.net, c->urmanet))) {
+		urmaclearctx(c);
+	}
+	g_free(c->urmadocumenturi);
+	c->urmadocumenturi = g_strdup(uri);
+	urmasnapshot(c, item);
+	urmasyncscope(c);
+}
+
+void
+urmasyncscope(Client *c)
+{
+	char *label, *tip;
+	if (c->f->active != c)
+		return;
+	if (!c->urmascope.genesis[0]) {
+		gtk_widget_hide(c->f->dns);
+		gtk_widget_hide(c->f->globaldns);
+		return;
+	}
+	label = g_strdup_printf("Temporary .%s", c->urmascope.net);
+	tip = g_strdup_printf("Temporary registry for this tab: %s\n%s\n"
+	    "Short names on other networks use their global registry.\n"
+	    "Tabs opened from this page receive an independent copy.",
+	    c->urmascope.net, c->urmascope.genesis);
+	gtk_label_set_text(GTK_LABEL(c->f->dns), label);
+	gtk_widget_set_tooltip_text(c->f->dns, tip);
+	gtk_widget_show(c->f->dns);
+	gtk_widget_show(c->f->globaldns);
+	g_free(label);
+	g_free(tip);
+}
+
+void
+urmaglobal(GtkButton *b, Frame *f)
+{
+	Client *c = f->active;
+	urmainvalidate(c, TRUE);
+	c->urmaepoch++;
+	memset(&c->urmascope, 0, sizeof(c->urmascope));
+	urmasyncscope(c);
+	refreshaddresses();
+	setstatus(c, "Using global registries; temporary history scopes cleared");
+}
+
 gboolean
 urmaresolveload(Client *c, const UrmaAddr *ad, const char *tail)
 {
-	char txid[65], *url, *msg;
-	const char *genesis;
+	char txid[65], genesis[65], *url, *msg;
+	const char *effective;
+	UrmaRegistryChoice choice = URMA_REGISTRY_CANCEL;
+	UrmaContext ctx;
 	GError *err = NULL;
+	WebKitWebView *view;
+	guint64 generation;
 
-	if (ad->genesis[0]
-	    && !urma_registry_switch_prompt(GTK_WINDOW(c->f->win), ad->net, ad->genesis)) {
-		setstatus(c, "registry switch declined; nothing resolved");
-		return FALSE;
+	urmainvalidate(c, TRUE);
+	generation = c->urmageneration;
+	ctx = urmacapture(c);
+	effective = urmaeffective(c, ad->net);
+	g_strlcpy(genesis, ad->genesis[0] ? ad->genesis :
+	    (effective ? effective : ""), sizeof(genesis));
+	if (ad->genesis[0] && g_strcmp0(ad->genesis, effective)) {
+		view = g_object_ref(c->view);
+		choice = urma_registry_switch_prompt(GTK_WINDOW(c->f->win), ad->net, genesis);
+		c = clientofview(view);
+		g_object_unref(view);
+		if (!c || c->urmageneration != generation)
+			return TRUE;
+		if (choice == URMA_REGISTRY_CANCEL) {
+			setatom(c, AtomUri, urmadocument(c));
+			setstatus(c, "Registry choice cancelled; page unchanged");
+			return TRUE;
+		}
 	}
-	genesis = urma_active_genesis(ad->net);
-	setbadge(c, "busy", "resolving", "Resolving the name through the active registry");
-	if (!urma_resolve(ad->net, ad->name, NULL, txid, &err)) {
-		msg = g_strdup_printf("cannot resolve %s.%s: %s", ad->name, ad->net,
-		    err ? err->message : "unknown error");
-		setstatus(c, msg);
-		setbadge(c, "error", "unresolved", msg);
-		g_free(msg);
-		g_clear_error(&err);
-		return FALSE;
+	if (!genesis[0]) {
+		g_set_error(&err, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+		    "no registry for .%s; use an explicit registry or publication address", ad->net);
+		goto failed;
 	}
-	urmaclearctx(c);
-	c->urmaname = g_strdup(ad->name);
-	c->urmanet = g_strdup(ad->net);
-	c->urmagenesis = g_strdup(genesis ? genesis : "");
-	c->urmatxid = g_strdup(txid);
+	setbadge(c, "busy", "resolving", "Resolving through the selected registry");
+	if (!urma_resolve(ad->net, ad->name, genesis, txid, &err))
+		goto failed;
+	if (choice == URMA_REGISTRY_GLOBAL) {
+		if (!urma_set_active_genesis(ad->net, genesis, &err))
+			goto failed;
+		memset(&ctx.scope, 0, sizeof(ctx.scope));
+		refreshaddresses();
+	} else if (choice == URMA_REGISTRY_TEMPORARY) {
+		g_strlcpy(ctx.scope.net, ad->net, sizeof(ctx.scope.net));
+		g_strlcpy(ctx.scope.genesis, genesis, sizeof(ctx.scope.genesis));
+	}
+	g_strlcpy(ctx.name, ad->name, sizeof(ctx.name));
+	g_strlcpy(ctx.net, ad->net, sizeof(ctx.net));
+	g_strlcpy(ctx.genesis, genesis, sizeof(ctx.genesis));
+	g_strlcpy(ctx.txid, txid, sizeof(ctx.txid));
 	url = urma_pub_uri(ad->net, txid, tail);
+	c->urmapending = ctx;
+	c->urmapendinguri = g_strdup(url);
+	c->urmapendinggeneration = generation;
+	c->urmapendingreset = choice == URMA_REGISTRY_GLOBAL;
 	setatom(c, AtomUri, url);
 	webkit_web_view_load_uri(c->view, url);
 	updatetitle(c);
 	g_free(url);
 	return TRUE;
+failed:
+	msg = g_strdup_printf("cannot open %s.%s: %s", ad->name, ad->net,
+	    err ? err->message : "unknown error");
+	setatom(c, AtomUri, urmadocument(c));
+	setstatus(c, msg);
+	setbadge(c, "error", "unresolved", msg);
+	c->errbadge = 1;
+	g_free(msg);
+	g_clear_error(&err);
+	return TRUE;
 }
 
-/* What the address bar shows: the short form while the active registry maps
- * the tab's name to the loaded publication, else the publication form. */
+/* The effective registry must still map the shown name to this publication. */
 const char *
 displayuri(Client *c)
 {
+	char *genesis = c->urmanet ? g_strdup(urmaeffective(c, c->urmanet)) : NULL;
 	g_free(c->urmadisp);
-	c->urmadisp = urma_display_uri(geturi(c), c->urmanet, c->urmaname);
+	c->urmadisp = urma_display_uri(urmadocument(c), c->urmanet, c->urmaname, genesis);
+	g_free(genesis);
 	return c->urmadisp;
 }
 
@@ -1729,8 +2000,9 @@ displayuri(Client *c)
 void
 copylink(Client *c, const Arg *a)
 {
-	char *link = a->i ?
-	    urma_dns_uri(geturi(c), c->urmanet, c->urmaname, c->urmagenesis) :
+	char *link = a->i || (c->urmanet && c->urmascope.genesis[0]
+	    && !strcmp(c->urmanet, c->urmascope.net)) ?
+	    urma_dns_uri(urmadocument(c), c->urmanet, c->urmaname, c->urmagenesis) :
 	    g_strdup(displayuri(c));
 
 	gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD), link, -1);
@@ -1743,7 +2015,7 @@ copylink(Client *c, const Arg *a)
 void
 urmadetails(Client *c, const Arg *a)
 {
-	char *text = urma_details(geturi(c), c->urmaname, c->urmagenesis);
+	char *text = urma_details(urmadocument(c), c->urmaname, c->urmagenesis);
 	GtkWidget *d, *grid, *k, *v, *area, *head;
 	gchar **lines;
 	int i, row = 0;
@@ -1752,6 +2024,12 @@ urmadetails(Client *c, const Arg *a)
 		setstatus(c, "no URMA publication loaded");
 		g_free(text);
 		return;
+	}
+	if (c->urmascope.genesis[0]) {
+		char *withscope = g_strdup_printf("%s\nTemporary registry: .%s %s\n", text,
+		    c->urmascope.net, c->urmascope.genesis);
+		g_free(text);
+		text = withscope;
 	}
 	/* FACELIFT: the same facts as before, laid out as a key/value sheet:
 	 * dim keys, selectable monospace values, wrapped hex. */
@@ -1814,11 +2092,7 @@ createview(WebKitWebView *v, WebKitNavigationAction *a, Client *c)
 
 	switch (webkit_navigation_action_get_navigation_type(a)) {
 	case WEBKIT_NAVIGATION_TYPE_OTHER: /* fallthrough */
-		/*
-		 * popup windows of type “other” are almost always triggered
-		 * by user gesture, so inverse the logic here
-		 */
-		if (webkit_navigation_action_is_user_gesture(a))
+		if (!webkit_navigation_action_is_user_gesture(a))
 			return NULL;
 		FALLTHROUGH;
 	case WEBKIT_NAVIGATION_TYPE_LINK_CLICKED: /* fallthrough */
@@ -1826,7 +2100,7 @@ createview(WebKitWebView *v, WebKitNavigationAction *a, Client *c)
 	case WEBKIT_NAVIGATION_TYPE_BACK_FORWARD: /* fallthrough */
 	case WEBKIT_NAVIGATION_TYPE_RELOAD: /* fallthrough */
 	case WEBKIT_NAVIGATION_TYPE_FORM_RESUBMITTED:
-		n = newtab(c->f, c, NULL, 1);
+		n = newtab(c->f, c, c, NULL, 1);
 		break;
 	default:
 		return NULL;
@@ -2064,7 +2338,7 @@ reloadstop(GtkButton *b, Frame *f)
 	Client *c = f->active;
 
 	if (c->loading)
-		webkit_web_view_stop_loading(c->view);
+		urmainvalidate(c, TRUE);
 	else
 		webkit_web_view_reload(c->view);
 	gtk_widget_grab_focus(GTK_WIDGET(c->view));
@@ -2529,7 +2803,13 @@ applyregistry(Frame *f, const char *net, const char *genesis)
 {
 	char *msg;
 
-	urma_set_active_genesis(net, genesis);
+	GError *err = NULL;
+	if (!urma_set_active_genesis(net, genesis, &err)) {
+		setstatus(f->active, err->message);
+		g_clear_error(&err);
+		g_idle_add(rebuildsettings, f);
+		return;
+	}
 	refreshaddresses();
 	msg = *genesis ? g_strdup_printf("active registry for .%s: %.12s… (%s)", net, genesis,
 	          urma_registry_label(net, genesis))
@@ -2703,6 +2983,7 @@ fetchnotify(UrmaFetchEvent ev, const char *net, const char *txid,
 void
 goback(GtkButton *b, Frame *f)
 {
+	urmainvalidate(f->active, TRUE);
 	webkit_web_view_go_back(f->active->view);
 	gtk_widget_grab_focus(GTK_WIDGET(f->active->view));
 }
@@ -2710,6 +2991,7 @@ goback(GtkButton *b, Frame *f)
 void
 goforward(GtkButton *b, Frame *f)
 {
+	urmainvalidate(f->active, TRUE);
 	webkit_web_view_go_forward(f->active->view);
 	gtk_widget_grab_focus(GTK_WIDGET(f->active->view));
 }
@@ -2959,6 +3241,14 @@ buildchrome(Frame *f)
 	gtk_widget_set_valign(f->badge, GTK_ALIGN_CENTER);
 	gtk_widget_set_no_show_all(f->badge, TRUE);
 
+	f->dns = gtk_label_new(NULL);
+	gtk_widget_set_no_show_all(f->dns, TRUE);
+	f->globaldns = gtk_button_new_with_label("Use global");
+	gtk_widget_set_no_show_all(f->globaldns, TRUE);
+	gtk_widget_set_tooltip_text(f->globaldns,
+	    "Clear this tab's temporary registry, including history scopes");
+	g_signal_connect(f->globaldns, "clicked", G_CALLBACK(urmaglobal), f);
+
 	f->pill = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
 	gtk_style_context_add_class(gtk_widget_get_style_context(f->pill),
 	    "urma-pill");
@@ -2982,6 +3272,8 @@ buildchrome(Frame *f)
 	gtk_box_pack_start(GTK_BOX(f->bar), f->reload, FALSE, FALSE, 0);
 	gtk_box_pack_start(GTK_BOX(f->bar), f->pill, TRUE, TRUE, 0);
 	gtk_box_pack_end(GTK_BOX(f->bar), f->gear, FALSE, FALSE, 0);
+	gtk_box_pack_end(GTK_BOX(f->bar), f->globaldns, FALSE, FALSE, 2);
+	gtk_box_pack_end(GTK_BOX(f->bar), f->dns, FALSE, FALSE, 4);
 
 	/* Find bar: floats at the top-right of the pages, zero layout cost. */
 	f->findentry = gtk_entry_new();
@@ -3130,6 +3422,11 @@ loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c)
 
 	switch (e) {
 	case WEBKIT_LOAD_STARTED:
+		if (!c->urmapendinguri || !urmasameuri(uri, c->urmapendinguri))
+			urmainvalidate(c, FALSE);
+		g_free(c->urmanavigationuri);
+		c->urmanavigationuri = g_strdup(uri);
+		c->urmanavigationgeneration = c->urmageneration;
 		setatom(c, AtomUri, uri);
 		setloading(c, 1);
 		c->title = uri;
@@ -3150,20 +3447,16 @@ loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c)
 		seturiparameters(c, uri, loadtransient);
 		break;
 	case WEBKIT_LOAD_COMMITTED:
+		if (!c->urmaerrorload && (!c->urmanavigationuri
+		    || c->urmanavigationgeneration != c->urmageneration
+		    || !urmasameuri(uri, c->urmanavigationuri)))
+			break;
 		setatom(c, AtomUri, uri);
 		c->title = uri;
 		seturiparameters(c, uri, loadcommitted);
 		c->https = webkit_web_view_get_tls_info(c->view, &c->cert,
 		                                        &c->tlserr);
-		/* URMA: a committed document outside the publication the name
-		 * resolved to ends the name context (direct TXID navigation). */
-		{
-			UrmaAddr ad;
-			if (c->urmatxid && urma_parse_uri(uri, &ad, NULL)
-			    && (ad.kind != URMA_ADDR_PUB || strcmp(ad.txid, c->urmatxid)
-			        || strcmp(ad.net, c->urmanet)))
-				urmaclearctx(c);
-		}
+		urmacommit(c, uri);
 		if (f->active == c && !gtk_widget_has_focus(f->entry))
 			gtk_entry_set_text(GTK_ENTRY(f->entry), displayuri(c));
 		/* FACELIFT: say what the committed document is. A publication
@@ -3184,12 +3477,17 @@ loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c)
 		syncnav(c);
 		break;
 	case WEBKIT_LOAD_FINISHED:
+		if (!c->urmanavigationuri || c->urmanavigationgeneration != c->urmageneration
+		    || !urmasameuri(uri, c->urmanavigationuri))
+			break;
+		c->urmaerrorload = 0;
 		seturiparameters(c, uri, loadfinished);
 		/* MODERNISE: keep the address in sync with where we actually
 		 * are, unless the user is mid-edit. */
 		if (f->active == c && !gtk_widget_has_focus(f->entry))
 			gtk_entry_set_text(GTK_ENTRY(f->entry), displayuri(c));
-		setstatus(c, NULL);
+		if (!c->errbadge)
+			setstatus(c, NULL);
 		setloading(c, 0);
 		syncnav(c);
 		runscript(c);
@@ -3256,6 +3554,22 @@ loadfailed(WebKitWebView *v, WebKitLoadEvent e, gchar *uri, GError *err,
 {
 	gchar *html, *euri, *emsg;
 
+	if (!c->urmanavigationuri || c->urmanavigationgeneration != c->urmageneration
+	    || !urmasameuri(uri, c->urmanavigationuri))
+		return TRUE;
+	if (c->urmapendinguri && urmasameuri(uri, c->urmapendinguri)) {
+		urmainvalidate(c, FALSE);
+		if (c->urmadocumenturi) {
+			setatom(c, AtomUri, c->urmadocumenturi);
+			setstatus(c, err ? err->message : "Navigation failed; page unchanged");
+			setbadge(c, "error", "unavailable", err ? err->message : NULL);
+			c->errbadge = 1;
+			setloading(c, 0);
+			setspinning(c, 0);
+			syncnav(c);
+			return TRUE;
+		}
+	}
 	if (g_error_matches(err, WEBKIT_NETWORK_ERROR,
 	    WEBKIT_NETWORK_ERROR_CANCELLED))
 		return FALSE;
@@ -3288,6 +3602,16 @@ loadfailed(WebKitWebView *v, WebKitLoadEvent e, gchar *uri, GError *err,
 		if (done)
 			return TRUE;
 	}
+	if (c->urmadocumenturi && urma_is_uri(uri)) {
+		urmainvalidate(c, FALSE);
+		setatom(c, AtomUri, c->urmadocumenturi);
+		setstatus(c, err ? err->message : "Navigation failed; page unchanged");
+		setbadge(c, "error", "unavailable", err ? err->message : NULL);
+		c->errbadge = 1;
+		setloading(c, 0);
+		setspinning(c, 0);
+		return TRUE;
+	}
 
 	euri = g_markup_escape_text(uri ? uri : "", -1);
 	emsg = g_markup_escape_text(err && err->message ? err->message : "", -1);
@@ -3316,6 +3640,7 @@ loadfailed(WebKitWebView *v, WebKitLoadEvent e, gchar *uri, GError *err,
 	    "declared set of a publication is recovered and verified.</p>" : "");
 
 	c->errorpage = 1;
+	c->urmaerrorload = 1;
 	c->errbadge = 1;
 	webkit_web_view_load_alternate_html(v, html, uri, NULL);
 	setstatus(c, NULL);
@@ -3406,7 +3731,7 @@ decidenavigation(WebKitPolicyDecision *d, Client *c)
 	/* A link with a "_blank" target opens a tab instead of a popup. */
 	if (webkit_navigation_action_get_frame_name(a)) {
 		webkit_policy_decision_ignore(d);
-		newtab(c->f, NULL, uri, 1);
+		newtab(c->f, NULL, c, uri, 1);
 		return;
 	}
 	webkit_policy_decision_use(d);
@@ -3425,10 +3750,15 @@ decidenewwindow(WebKitPolicyDecision *d, Client *c)
 	case WEBKIT_NAVIGATION_TYPE_BACK_FORWARD: /* fallthrough */
 	case WEBKIT_NAVIGATION_TYPE_RELOAD: /* fallthrough */
 	case WEBKIT_NAVIGATION_TYPE_FORM_RESUBMITTED:
-		newtab(c->f, NULL, webkit_uri_request_get_uri(
+		newtab(c->f, NULL, c, webkit_uri_request_get_uri(
 		    webkit_navigation_action_get_request(a)), 1);
 		break;
 	case WEBKIT_NAVIGATION_TYPE_OTHER: /* fallthrough */
+		if (webkit_navigation_action_is_user_gesture(a)) {
+			webkit_policy_decision_use(d);
+			return;
+		}
+		FALLTHROUGH;
 	default:
 		break;
 	}
@@ -3571,6 +3901,7 @@ pasteuri(GtkClipboard *clipboard, const char *text, gpointer d)
 void
 reload(Client *c, const Arg *a)
 {
+	urmainvalidate(c, TRUE);
 	if (a->i)
 		webkit_web_view_reload_bypass_cache(c->view);
 	else
@@ -3658,6 +3989,7 @@ scrollh(Client *c, const Arg *a)
 void
 navigate(Client *c, const Arg *a)
 {
+	urmainvalidate(c, TRUE);
 	if (a->i < 0)
 		webkit_web_view_go_back(c->view);
 	else if (a->i > 0)
@@ -3667,7 +3999,7 @@ navigate(Client *c, const Arg *a)
 void
 stop(Client *c, const Arg *a)
 {
-	webkit_web_view_stop_loading(c->view);
+	urmainvalidate(c, TRUE);
 	hidefind(c->f);
 }
 
@@ -3740,7 +4072,7 @@ find(Client *c, const Arg *a)
 void
 opentab(Client *c, const Arg *a)
 {
-	Client *n = newtab(c->f, NULL, NULL, 1);
+	Client *n = newtab(c->f, NULL, NULL, NULL, 1);
 
 	showaddress(n, NULL);
 }
@@ -3785,7 +4117,7 @@ clicknavigate(Client *c, const Arg *a, WebKitHitTestResult *h)
 void
 clicknewtab(Client *c, const Arg *a, WebKitHitTestResult *h)
 {
-	newtab(c->f, NULL, webkit_hit_test_result_get_link_uri(h), a->i);
+	newtab(c->f, NULL, c, webkit_hit_test_result_get_link_uri(h), a->i);
 }
 
 void
@@ -3929,7 +4261,7 @@ main(int argc, char *argv[])
 
 	setup();
 	f = newframe();
-	newtab(f, NULL, uri, 1);
+	newtab(f, NULL, NULL, uri, 1);
 	if (defconfig[RunInFullscreen].val.i)
 		togglefullscreen(f->active, NULL);
 	setatom(f->active, AtomFind, "");
