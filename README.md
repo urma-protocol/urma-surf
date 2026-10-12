@@ -71,8 +71,8 @@ produce identical archive bytes. `make clean` removes local build products;
 
 ## Install the separate CLI from the intended source revision
 
-The integration reference is URMA core commit
-`73f5972a0a3f9c06b3047fa7c669539f5f3f06ce`, from
+This development checkout targets URMA core commit
+`b5013a49629f0ea27f2068d114bcc35a0027f094`, including the optional Names client, from
 https://github.com/urma-protocol/urma. Local source commits may not yet be
 available on that remote. Obtain the exact authorized checkout first, rather
 than treating an arbitrary latest package as the tested version. From that
@@ -111,15 +111,26 @@ Addresses use `urma://ROOT_TXID.NET/`, `urma://NAME.NET/` or
 `.rbtc` regtest form is for isolated tests with `URMA_SURF_REGTEST=1`.
 
 No registry is activated by default. A suggested registry is not an active
-registry. Names require a separately scanned local index; the browser does
-not silently scan a registry. Choose the network and actual genesis, then
-run the CLI explicitly, repeating the scan as needed to update the index:
+registry. The browser passes the effective network and registry explicitly to
+`urma names resolve`. With an optional `archive` connection in `URMA_CONFIG`,
+the CLI can read a registered Names projection from URMA Node without a local
+index. The CLI requires a loopback endpoint and a private, bounded bearer file:
+
+```json
+{"archive":{"endpoint":"127.0.0.1:8118","token_file":"/absolute/path/to/node-token"}}
+```
+
+No daemon, registry or scan is started by this read. An unavailable, stale or
+invalid view falls back to the existing local index for that same network and
+registry. If neither is usable, navigation refuses; it never selects another
+registry or implicitly scans. Without archive configuration, prepare and update
+the local index explicitly:
 
 ```sh
 URMA_NETWORK=litecoin-testnet urma names scan \
   --genesis GENESIS_TXID \
   --index /absolute/names/litecoin-testnet/GENESIS_TXID.json
-urma names resolve --network litecoin-testnet \
+urma names resolve --network litecoin-testnet --registry GENESIS_TXID \
   --index /absolute/names/litecoin-testnet/GENESIS_TXID.json NAME
 ```
 
@@ -161,7 +172,12 @@ CLI fetch path is still allowed to contact its configured source.
 Offline proof and content verification does not establish current chain
 inclusion, finality or the network independently. Store network metadata
 comes from the source check during fetch; cached names are not a new chain
-scan. The `verified` badge reports these proof/content checks, not a fresh
+scan. Optional Node Names views are local operator projections, not independent
+proof of current registry state. The browser retains its existing five-second
+positive resolution cache; it does not subscribe to reorg events or compare the
+projection against the current global tip. A missing local name is relative to
+the projection returned by the CLI. Web fetch and manifest verification keep
+their existing source paths. The `verified` badge reports these proof/content checks, not a fresh
 consensus audit or the truth of a publication. Data availability still
 depends on accessible retained records. This experimental version does not
 claim mainnet testing.

@@ -557,8 +557,9 @@ urma_registry_switch_prompt(GtkWindow *parent, const char *net, const char *gene
 	    resp == GTK_RESPONSE_YES ? URMA_REGISTRY_GLOBAL : URMA_REGISTRY_CANCEL;
 }
 
-/* `urma names resolve` over the registry's local index. Positive answers are
- * cached briefly so the address bar does not spawn the CLI on every repaint. */
+/* `urma names resolve` for the explicit registry. The CLI chooses its optional
+ * archive view or local index; the browser never scans a registry implicitly.
+ * Positive answers are cached briefly to avoid CLI calls on every repaint. */
 struct resolved { char txid[65]; gint64 when; };
 static GHashTable *resolutions;
 
@@ -576,27 +577,20 @@ resolvejson(const char *net, const char *name, const char *genesis, GError **err
 		return NULL;
 	}
 	idx = indexpath(n->chain, genesis);
-	if (!g_file_test(idx, G_FILE_TEST_IS_REGULAR)) {
-		g_set_error(err, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-		    "registry %.12s… is not scanned locally for %s (expected %s); run: "
-		    "urma names scan --genesis %s --genesis-height H --index %s",
-		    genesis, n->chain, idx, genesis, idx);
-		g_free(idx);
-		return NULL;
-	}
-	argv = cliargs(n->chain, "names", "resolve", "--network", n->chain, "--index", idx, name, NULL);
+	argv = cliargs(n->chain, "names", "resolve", "--network", n->chain,
+	    "--registry", genesis, "--index", idx, name, NULL);
 	root = clijson(n->chain, argv, err);
 	g_strfreev(argv);
 	g_free(idx);
 	if (!root)
 		return NULL;
 	/* The resolver must answer for this chain and this registry; anything
-	 * else is a wrong index on disk, never a resolution. */
+	 * else is a wrong resolver response, never a resolution. */
 	o = JSON_NODE_HOLDS_OBJECT(root) ? json_node_get_object(root) : NULL;
 	if (!o || g_strcmp0(json_object_get_string_member(o, "network"), n->chain)
 	    || g_strcmp0(json_object_get_string_member(o, "registry"), genesis)) {
 		g_set_error(err, G_IO_ERROR, G_IO_ERROR_FAILED,
-		    "the local index does not answer for registry %.12s… on %s", genesis, n->chain);
+		    "the resolver does not answer for registry %.12s… on %s", genesis, n->chain);
 		json_node_unref(root);
 		return NULL;
 	}
