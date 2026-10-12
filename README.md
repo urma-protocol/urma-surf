@@ -72,7 +72,8 @@ produce identical archive bytes. `make clean` removes local build products;
 ## Install the separate CLI from the intended source revision
 
 This development checkout targets URMA core commit
-`b5013a49629f0ea27f2068d114bcc35a0027f094`, including the optional Names client, from
+`81e15dc1cbdb868131dc26bb6bac6cd4d5c22f7d`, including the optional Names client
+and explicit Web acquisition metadata, from
 https://github.com/urma-protocol/urma. Local source commits may not yet be
 available on that remote. Obtain the exact authorized checkout first, rather
 than treating an arbitrary latest package as the tested version. From that
