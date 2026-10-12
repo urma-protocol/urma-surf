@@ -5,8 +5,8 @@
  *     (STORE/publications/<chain>/<root>.json + STORE/objects/<sha256>);
  *     a missing publication is fetched asynchronously by spawning the CLI;
  *     every object is re-verified (SHA-256, length) before it is served;
- *   - names resolve through `urma names resolve` over the local names index
- *     of the registry (STORE-independent: NAMES_DIR/<genesis>.json);
+ *   - names resolve through `urma names resolve` for the explicit registry,
+ *     using its optional Node view or local index (independent of STORE);
  *   - address forms, per-publication origin, declared set, explicit MIME +
  *     Content-Type + CSP, page network black hole, active registry per
  *     network (ini, global across processes) as decided in the contract.
