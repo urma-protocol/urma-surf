@@ -37,7 +37,6 @@ class Driver:
 
     def start(self, uri):
         work, browser = self.work, self.browser
-        Atspi.set_timeout(500, 1500)
         read_fd, write_fd = os.pipe()
         try:
             self.xlog = (work / "xvfb.log").open("w")
@@ -54,6 +53,9 @@ class Driver:
             self.env["ATSPI_DBUS_IMPLEMENTATION"] = "dbus-daemon"
             os.environ["ATSPI_DBUS_IMPLEMENTATION"] = "dbus-daemon"
             self.run("dbus-update-activation-environment", "DISPLAY", "ATSPI_DBUS_IMPLEMENTATION")
+            # AT-SPI calls may activate its registry; the private display must
+            # already exist and be exported to D-Bus before the first call.
+            Atspi.set_timeout(500, 1500)
             Atspi.init()
             Atspi.get_desktop(0)
         finally:
