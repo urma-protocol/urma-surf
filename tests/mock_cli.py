@@ -30,7 +30,9 @@ def main():
     fixture = json.loads((work / "fixture.json").read_text())["publications"]
     if args[:2] == ["names", "resolve"]:
         network = option(args, "--network")
-        registry = Path(option(args, "--index")).stem
+        registry = option(args, "--registry")
+        if registry != Path(option(args, "--index")).stem:
+            fail("explicit registry differs from fallback index")
         name = args[-1]
         key = f"{network}/{registry}/{name}"
         if key in state.get("raw_names", {}):

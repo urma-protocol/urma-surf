@@ -25,7 +25,8 @@ consensus or verification of every retained child transaction.
 
 The GUI gate controls the production GTK/WebKit callbacks through a private
 Xvfb/accessibility bus (classic dbus-daemon activation, without a user-systemd
-session; GIO uses the local filesystem backend). `names resolve` is an explicit mock, `web manifest`
+session; GIO uses the local filesystem backend). `names resolve` is an explicit
+mock that requires `--registry` matching the fallback index path; `web manifest`
 delegates to the supplied real CLI, and `web fetch` can only refuse or wait for a
 test-owned release file. Omitting `--urma` selects mock manifests and provides
 no CLI authenticity evidence. Each command/poll and the whole session have
