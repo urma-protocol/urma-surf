@@ -75,3 +75,11 @@ zero CLI calls and uses no real CLI or network:
 ```
 PYTHONDONTWRITEBYTECODE=1 python3 tests/startpage_gate.py --browser /absolute/path/urma-surf --evidence /private/output/directory
 ```
+
+The bridge gate additionally checks the format/source/tip matrix for Web
+acquisition metadata under ASan/UBSan. It does not acquire content. The store gate
+also checks a format-3 pointer over the existing authenticated offline fixture;
+this is metadata verification, not a network recovery test. Passing an explicit
+prebuilt bridge via `--bridge /absolute/path/bridge_test` runs real CLI manifests
+through the C bridge and checks both summary and details for legacy and operator
+provenance. It does not start GTK or imply GUI callback coverage.

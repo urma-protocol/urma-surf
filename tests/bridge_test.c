@@ -36,6 +36,32 @@ main(int argc, char **argv)
 		g_free(v);
 		return ok ? 0 : 1;
 	}
+	if (argc > 2 && !strcmp(argv[1], "metadata")) {
+		JsonParser *parser = json_parser_new();
+		gboolean operator_source = FALSE, ok = FALSE;
+		if (json_parser_load_from_data(parser, argv[2], -1, NULL)) {
+			JsonNode *node = json_parser_get_root(parser);
+			if (JSON_NODE_HOLDS_OBJECT(node))
+				ok = manifestsource(json_node_get_object(node), &operator_source);
+		}
+		printf("accepted=%d operator=%d\n", ok, operator_source);
+		g_object_unref(parser);
+		return ok ? 0 : 1;
+	}
+	if (argc > 4 && !strcmp(argv[1], "manifest")) {
+		GError *err = NULL;
+		if (!loadmanifest(argv[2], argv[3], &err)) {
+			fprintf(stderr, "%s\n", err ? err->message : "manifest refused");
+			g_clear_error(&err);
+			return 1;
+		}
+		char *summary = urma_summary(argv[4]);
+		char *details = urma_details(argv[4], NULL, NULL);
+		printf("%s\n%s", summary ? summary : "", details);
+		g_free(summary);
+		g_free(details);
+		return 0;
+	}
 	if (argc > 4 && !strcmp(argv[1], "resolve")) {
 		char tx[65];
 		GError *err = NULL;

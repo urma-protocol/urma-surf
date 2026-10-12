@@ -48,6 +48,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--urma", type=Path, required=True)
     parser.add_argument("--core", type=Path, help="optional Git checkout provenance; not needed in source tarball")
+    parser.add_argument("--bridge", type=Path, help="explicit prebuilt ASan bridge for actual CLI manifest and provenance renderers")
     args = parser.parse_args()
     binary = args.urma.resolve(strict=True)
     commit = subprocess.check_output(["git", "-C", str(args.core), "rev-parse", "HEAD"],
@@ -72,6 +73,25 @@ def main():
                 return json.loads(result.stdout)
             assert result.returncode == 1, (result.returncode, result.stderr)
             assert expected_error in result.stderr, result.stderr
+
+        def rendered(root, operator):
+            if not args.bridge:
+                return
+            bridge_env = dict(env, URMA_BIN=str(binary), URMA_WEB_STORE=str(store),
+                              ASAN_OPTIONS="detect_leaks=0:abort_on_error=1",
+                              UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1")
+            result = subprocess.run([str(args.bridge.resolve(strict=True)), "manifest",
+                                     "litecoin-mainnet", root, f"urma://{root}.ltc/"],
+                                    cwd=work, env=bridge_env, capture_output=True, text=True, timeout=10)
+            assert result.returncode == 0, (result.returncode, result.stderr)
+            assert "AddressSanitizer" not in result.stderr and "runtime error:" not in result.stderr
+            if operator:
+                assert result.stdout.count("chain inclusion not checked") == 2, result.stdout
+                assert "verified at height" not in result.stdout and "written at height" not in result.stdout
+                assert "local node operator" in result.stdout
+            else:
+                assert "verified at height" in result.stdout and "written at height" in result.stdout
+                assert "local node operator" not in result.stdout
 
         passed = 0
         for item in fixture["publications"].values():
@@ -112,9 +132,25 @@ def main():
         passed += 1
         manifest(root)  # restored input still passes without any migration or scan
         passed += 1
+        rendered(root, False)
+        operator = json.loads(original_pointer)
+        operator["format"] = "URMA-WEB-STORE-3"
+        operator["source"] = {"kind": "local-node-operator"}
+        del operator["tip_height"], operator["tip_hash"]
+        pointer.write_text(json.dumps(operator))
+        operator_bytes = pointer.read_bytes()
+        summary = manifest(root)
+        assert summary["format"] == "URMA-WEB-STORE-3"
+        assert summary["source"] == {"kind": "local-node-operator"}
+        assert "tip_height" not in summary and "tip_hash" not in summary
+        assert summary["payload_sha256"] == item["payload_sha256"]
+        rendered(root, True)
+        assert pointer.read_bytes() == operator_bytes
+        pointer.write_bytes(original_pointer)
+        passed += 1
         print(json.dumps({"gate": "authentic-offline-store", "passed": passed,
                           "fixture_sha256": hashlib.sha256(Path(__file__).with_name("fixtures").joinpath("authentic.json").read_bytes()).hexdigest(),
-                          "core_commit": commit, "cli_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+                          "core_commit": commit, "actual_bridge_renderers": bool(args.bridge), "cli_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
                           "limitation": "binary provenance supplied by operator; no inclusion or complete child-graph verification claim"}))
 
 

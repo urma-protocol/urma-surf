@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded, standalone ASan/UBSan parser/tail/initiator gate; no browser or CLI."""
+"""Bounded, standalone ASan/UBSan parser/tail/initiator/metadata gate; no browser or CLI."""
 import argparse
 import json
 import os
@@ -19,6 +19,22 @@ def main():
         "json-glib-1.0", "libsoup-3.0",
     ], text=True, timeout=10))
     cases = json.loads((source / "tests/fixtures/bridge.json").read_text())
+    legacy = {"format": "URMA-WEB-STORE-2", "tip_height": 7, "tip_hash": "ab" * 32}
+    operator = {"format": "URMA-WEB-STORE-3", "source": {"kind": "local-node-operator"}}
+    metadata = [(legacy, True, False), (operator, True, True)]
+    for value in [dict(operator, source={"kind": "unknown"}),
+                  dict(operator, source={"kind": "local-node-operator", "extra": 1}),
+                  dict(operator, tip_height=0), dict(operator, tip_hash=None),
+                  {"format": "URMA-WEB-STORE-3"}, dict(operator, source=None),
+                  dict(legacy, source=operator["source"]), dict(legacy, tip_height=None),
+                  dict(legacy, tip_hash=4), dict(legacy, tip_height=-1),
+                  dict(legacy, format="unknown"), {"format": 3}]:
+        metadata.append((value, False, False))
+    for value, accepted, is_operator in metadata:
+        case = {"args": ["metadata", json.dumps(value)], "exit": 0 if accepted else 1}
+        if accepted:
+            case["stdout"] = f"accepted=1 operator={int(is_operator)}"
+        cases.append(case)
     env = {"PATH": os.defpath, "LANG": "C", "URMA_BIN": "/nonexistent/urma",
            "ASAN_OPTIONS": "detect_leaks=0:abort_on_error=1",
            "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"}
@@ -38,7 +54,7 @@ def main():
             if "stdout" in case:
                 assert result.stdout.strip() == case["stdout"], (case, result.stdout)
         print(json.dumps({"gate": "asan-bridge", "passed": len(cases), "failed": 0,
-                          "coverage": "parse/tail/initiator; resolver and GUI not executed"}))
+                          "coverage": "parse/tail/initiator/metadata; resolver, store and GUI not executed"}))
 
 
 if __name__ == "__main__":

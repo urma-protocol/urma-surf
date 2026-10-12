@@ -700,6 +700,7 @@ struct entry { char *path, *mime, *sha256; gint64 length; };
 struct manifest {
 	char *chain, *root, *author, *label, *entry, *tiphash;
 	gint64 tipheight;
+	gboolean operator_source;
 	GPtrArray *entries;      /* struct entry: files then pinned objects */
 	guint nfiles, npins;
 };
@@ -768,6 +769,42 @@ addentries(struct manifest *m, JsonObject *o, const char *member, guint *count)
  * (`urma web manifest`) and hands back the declared set; only that view is
  * cached, per process. A pointer file that is absent means "not stored";
  * every other failure is reported as it is (tampered, incomplete, ...). */
+/* Acquisition metadata is not signed content or evidence of chain inclusion.
+ * Format 3 deliberately makes older readers refuse content-only provenance. */
+static gboolean
+manifestsource(JsonObject *o, gboolean *operator_source)
+{
+	JsonNode *format, *source, *kind, *height, *hash;
+	const char *tag;
+
+	if (!o || !(format = json_object_get_member(o, "format"))
+	    || !JSON_NODE_HOLDS_VALUE(format) || json_node_get_value_type(format) != G_TYPE_STRING)
+		return FALSE;
+	tag = json_node_get_string(format);
+	if (!g_strcmp0(tag, "URMA-WEB-STORE-2")) {
+		height = json_object_get_member(o, "tip_height");
+		hash = json_object_get_member(o, "tip_hash");
+		*operator_source = FALSE;
+		return !json_object_has_member(o, "source") && height && hash
+		    && JSON_NODE_HOLDS_VALUE(height) && json_node_get_value_type(height) == G_TYPE_INT64
+		    && json_node_get_int(height) >= 0
+		    && JSON_NODE_HOLDS_VALUE(hash) && json_node_get_value_type(hash) == G_TYPE_STRING;
+	}
+	if (g_strcmp0(tag, "URMA-WEB-STORE-3") || json_object_has_member(o, "tip_height")
+	    || json_object_has_member(o, "tip_hash"))
+		return FALSE;
+	source = json_object_get_member(o, "source");
+	if (!source || !JSON_NODE_HOLDS_OBJECT(source)
+	    || json_object_get_size(json_node_get_object(source)) != 1)
+		return FALSE;
+	kind = json_object_get_member(json_node_get_object(source), "kind");
+	if (!kind || !JSON_NODE_HOLDS_VALUE(kind) || json_node_get_value_type(kind) != G_TYPE_STRING
+	    || g_strcmp0(json_node_get_string(kind), "local-node-operator"))
+		return FALSE;
+	*operator_source = TRUE;
+	return TRUE;
+}
+
 static struct manifest *
 loadmanifest(const char *chain, const char *root, GError **err)
 {
@@ -776,6 +813,7 @@ loadmanifest(const char *chain, const char *root, GError **err)
 	JsonNode *node;
 	JsonObject *o;
 	gchar **argv;
+	gboolean operator_source = FALSE;
 
 	if (!manifests)
 		manifests = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, freemanifest);
@@ -801,7 +839,7 @@ loadmanifest(const char *chain, const char *root, GError **err)
 		return NULL;
 	}
 	o = JSON_NODE_HOLDS_OBJECT(node) ? json_node_get_object(node) : NULL;
-	if (!o || g_strcmp0(json_object_get_string_member(o, "format"), "URMA-WEB-STORE-2")
+	if (!manifestsource(o, &operator_source)
 	    || g_strcmp0(json_object_get_string_member(o, "network"), chain)
 	    || g_strcmp0(json_object_get_string_member(o, "root"), root)) {
 		g_set_error(err, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
@@ -816,8 +854,11 @@ loadmanifest(const char *chain, const char *root, GError **err)
 	m->author = g_strdup(json_object_get_string_member(o, "author"));
 	m->label = g_strdup(json_object_get_string_member(o, "label"));
 	m->entry = g_strdup(json_object_get_string_member(o, "entry"));
-	m->tiphash = g_strdup(json_object_get_string_member(o, "tip_hash"));
-	m->tipheight = json_object_get_int_member(o, "tip_height");
+	m->operator_source = operator_source;
+	if (!operator_source) {
+		m->tiphash = g_strdup(json_object_get_string_member(o, "tip_hash"));
+		m->tipheight = json_object_get_int_member(o, "tip_height");
+	}
 	m->entries = g_ptr_array_new_with_free_func(freeentry);
 	addentries(m, o, "files", &m->nfiles);
 	addentries(m, o, "pinned", &m->npins);
@@ -1229,6 +1270,13 @@ urma_summary(const char *docuri)
 	g_free(key);
 	if (!m)
 		return NULL;
+	if (m->operator_source)
+		return g_strdup_printf("Content and signatures verified from the store: %s\n"
+		    "%u files, %u pinned objects, entry %s\n"
+		    "Author %.16s…\nRoot %.16s… on %s\n"
+		    "Acquired from a local node operator; chain inclusion not checked",
+		    m->label && *m->label ? m->label : "(no label)", m->nfiles, m->npins,
+		    m->entry, m->author, m->root, n->chain);
 	return g_strdup_printf("Verified from the store: %s\n"
 	    "%u files, %u pinned objects, entry %s\n"
 	    "Author %.16s…\nRoot %.16s… on %s (verified at height %" G_GINT64_FORMAT ")",
@@ -1251,9 +1299,14 @@ urma_details(const char *docuri, const char *name, const char *genesis)
 	if ((m = loadmanifest(n->chain, a.txid, &err))) {
 		g_string_append_printf(s,
 		    "Provenance (author key): %s\nLabel: %s\nEntry: %s\n"
-		    "Declared set: %u files, %u pinned objects\n"
-		    "Verified from the store written at height %" G_GINT64_FORMAT " (%s)\n",
-		    m->author, m->label, m->entry, m->nfiles, m->npins, m->tipheight, m->tiphash);
+		    "Declared set: %u files, %u pinned objects\n",
+		    m->author, m->label, m->entry, m->nfiles, m->npins);
+		if (m->operator_source)
+			g_string_append(s, "Content and signatures verified from the store\n"
+			    "Acquisition: local node operator; chain inclusion not checked\n");
+		else
+			g_string_append_printf(s, "Verified from the store written at height %"
+			    G_GINT64_FORMAT " (%s)\n", m->tipheight, m->tiphash);
 	} else {
 		g_string_append_printf(s, "Not verified: %s\n", err->message);
 		g_clear_error(&err);

@@ -237,3 +237,12 @@ This repository preserves the original Surf Git history and upstream author
 attributions, followed by the URMA integration commits; it is not a new root
 commit or an unrelated rewrite. The MIT/X license remains unchanged.
 Upstream authors are listed in `LICENSE` and the retained commit history.
+
+Web publications acquired through the CLI's optional local archive use store
+format `URMA-WEB-STORE-3`. Surf accepts its explicit
+`source: {"kind":"local-node-operator"}` only without legacy tip fields, and
+labels both summary and details as content/signature verification with chain
+inclusion not checked. Format 2 keeps the autonomous observation display. Older
+Surf versions refuse format 3 instead of interpreting it as a block observation.
+This acquisition metadata is not signed URMAWEB1 content or a freshness proof;
+publication caching and object hash checks are unchanged.
